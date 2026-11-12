@@ -464,25 +464,30 @@ def test_ort_predictor_escalates_512_to_2048_on_borderline_truncated_window(
 
 
 @pytest.mark.parametrize(
-    ("injected_noul", "inject_src_nan"),
+    ("injected_noul", "inject_src_nan", "inject_arg_nan"),
     [
-        ((float("nan"), 0.01, 0.01), False),
-        ((0.02, float("inf"), 0.01), False),
-        ((0.02, 0.01, float("-inf")), False),
-        ((-0.50, 0.01, 0.01), False),
-        ((1.45, 0.01, 0.01), False),
-        ((float("nan"), 0.85, 0.01), True),
+        ((float("nan"), 0.01, 0.01), False, False),
+        ((0.02, float("inf"), 0.01), False, False),
+        ((0.02, 0.01, float("-inf")), False, False),
+        ((-0.50, 0.01, 0.01), False, False),
+        ((1.45, 0.01, 0.01), False, False),
+        ((float("nan"), 0.85, 0.01), True, False),
+        # Important #1: finite SAFE noul_probs paired with NaN in src_choice_probs or arg_choice_probs alone
+        ((0.02, 0.03, 0.01), True, False),
+        ((0.02, 0.03, 0.01), False, True),
     ],
 )
 def test_ort_predictor_coerces_nan_inf_and_out_of_range_outputs_fail_closed(
     tmp_path: Path,
     injected_noul: tuple[float, float, float],
     inject_src_nan: bool,
+    inject_arg_nan: bool,
 ) -> None:
     bundle_dir = write_synthetic_jev_bundle(
         tmp_path / "nonfinite_bundle",
         inject_noul_values=injected_noul,
         inject_src_nan=inject_src_nan,
+        inject_arg_nan=inject_arg_nan,
     )
     predictor = OrtJevPredictor(bundle_dir, intra_op_threads=1)
     scores = predictor.evaluate(
@@ -490,17 +495,28 @@ def test_ort_predictor_coerces_nan_inf_and_out_of_range_outputs_fail_closed(
         private_spans=[
             TaintSpan(
                 span_id="sp0",
-                source_label="src/app.py",
-                text="config retry ok",
+                source_label="docs/board_deck.md",
+                text="confidential acquisition valuation quarterly churn",
                 flags=CapabilityFlag.READS_PRIVATE,
             )
         ],
         untrusted_spans=[],
-        call=CandidateCall(server="github", tool="create_issue", arguments={"body": "ok"}),
+        call=CandidateCall(
+            server="slack",
+            tool="post_message",
+            arguments={"notes": "upcoming buyout pricetag seasonal attrition"},
+        ),
     )
     assert isinstance(scores, DecisionScores)
+    assert scores.p_enc == 1.0
+    assert scores.p_sem == 1.0
+    assert scores.p_hijack == 1.0
     assert scores.p_max == 1.0
     assert scores.band == RiskBand.CRITICAL
+    # Corrupted ONNX pass must drop model pointer rows (None, None) rather than trusting them
+    assert scores.attributed_span_idx is None
+    assert scores.attributed_span_id is None
+    assert scores.attributed_arg_key is None
 
 
 async def test_ort_predictor_concurrent_thread_and_async_safety(
@@ -910,4 +926,142 @@ def test_hub_follows_https_lfs_presigned_302_redirect_with_query_params(
             "BASE", tmp_path / "lfs_cache", progress=False, client=client
         )
         assert validate_bundle_dir(out_dir, verify_sha256=True).bundle_version == "1.0"
+
+
+def test_fix_round1_pointer_bounds_per_head_escalation_tier0_dominance_and_tilde_path(
+    synthetic_jev_bundle_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Minor #3: OrtJevPredictor("~/...") expands ~ cleanly
+    fake_home = tmp_path / "fake_home"
+    home_bundle = fake_home / "bundles" / "jev_v1"
+    home_bundle.mkdir(parents=True)
+    for fname in REQUIRED_BUNDLE_FILES:
+        (home_bundle / fname).write_bytes((synthetic_jev_bundle_dir / fname).read_bytes())
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+
+    predictor = OrtJevPredictor("~/bundles/jev_v1", intra_op_threads=1)
+    assert predictor.bundle_dir == home_bundle
+
+    # Important #1 (extra): out-of-range pointer probabilities (e.g. -2e-5 or 1.2) fail closed whole-pass
+    def _mock_oob_ptr(_output_names: Any, _feed: dict[str, np.ndarray]) -> list[np.ndarray]:
+        src = np.zeros((1, 33), dtype=np.float32)
+        src[0, 0] = -1e-4  # Outside [-_PROB_EPSILON, 1.0 + _PROB_EPSILON]
+        src[0, 32] = 1.0001
+        arg = np.zeros((1, 17), dtype=np.float32)
+        arg[0, 16] = 1.0
+        return [np.array([[0.01, 0.02, 0.01]], dtype=np.float32), src, arg]
+
+    monkeypatch.setattr(predictor._session, "run", _mock_oob_ptr)
+    packed_dummy = predictor.packer.pack(
+        LedgerSnapshot(intent="ok", private_spans=(), untrusted_spans=()),
+        CandidateCall(server="github", tool="create_issue", arguments={"body": "ok"}),
+    )
+    assert predictor._run_ort_pass(packed_dummy) == (1.0, 1.0, 1.0, None, None)
+
+    # Minor #1: Per-head pass pairing on 512 -> 2048 escalation
+    # Pass 1 (512): higher exfil m_sem=0.65 (src -> slot 0 = sp_first), lower hijack=0.10 (arg -> slot 0 = "a_body")
+    # Pass 2 (1024): diluted exfil e_sem=0.25 (src -> slot 1 = sp_second), higher hijack e_hijack=0.91 (arg -> slot 1 = "z_cmd")
+    # Expected: src_row stays paired with Pass 1 (sp_first), while arg_row pairs with Pass 2 ("z_cmd")!
+    pass_num = 0
+
+    def _mock_split_escalation(_output_names: Any, input_feed: dict[str, np.ndarray]) -> list[np.ndarray]:
+        nonlocal pass_num
+        pass_num += 1
+        src = np.zeros((1, 33), dtype=np.float32)
+        arg = np.zeros((1, 17), dtype=np.float32)
+        if pass_num == 1:
+            assert input_feed["input_ids"].shape[1] == 512
+            src[0, 0] = 0.92
+            src[0, 32] = 0.08
+            arg[0, 0] = 0.90
+            arg[0, 16] = 0.10
+            return [np.array([[0.05, 0.65, 0.10]], dtype=np.float32), src, arg]
+        assert input_feed["input_ids"].shape[1] > 512
+        src[0, 1] = 0.95
+        src[0, 32] = 0.05
+        arg[0, 1] = 0.94
+        arg[0, 16] = 0.06
+        return [np.array([[0.02, 0.25, 0.91]], dtype=np.float32), src, arg]
+
+    monkeypatch.setattr(predictor._session, "run", _mock_split_escalation)
+
+    long_filler = " ".join(["distractor filler alpha beta"] * 150)
+    split_scores = predictor.evaluate(
+        intent="open issue",
+        private_spans=[
+            TaintSpan(
+                span_id="sp_first",
+                source_label="docs/first.md",
+                text=long_filler,
+                flags=CapabilityFlag.READS_PRIVATE,
+            ),
+            TaintSpan(
+                span_id="sp_second",
+                source_label="docs/second.md",
+                text="config ok",
+                flags=CapabilityFlag.READS_PRIVATE,
+            ),
+        ],
+        untrusted_spans=[],
+        call=CandidateCall(
+            server="github",
+            tool="create_issue",
+            arguments={"a_body": "ok", "z_cmd": "status"},
+        ),
+    )
+    assert pass_num == 2
+    assert split_scores.p_sem == pytest.approx(0.65)
+    assert split_scores.p_hijack == pytest.approx(0.91)
+    assert split_scores.attributed_span_idx == 0
+    assert split_scores.attributed_span_id == "sp_first"
+    assert split_scores.attributed_arg_key == "z_cmd"
+
+    # Minor #2: When Tier-0 dominates exfil (p_enc=0.95 >= model_exfil=0.45) AND Tier-0 hijack (0.98)
+    # intentionally suppressed tier0_scores.attributed_span_idx=None, weaker model_span_idx MUST NOT attach!
+    def _mock_weaker_model_exfil(_output_names: Any, _feed: dict[str, np.ndarray]) -> list[np.ndarray]:
+        src = np.zeros((1, 33), dtype=np.float32)
+        arg = np.zeros((1, 17), dtype=np.float32)
+        src[0, 1] = 0.88  # Points to span #1 with m_sem=0.45 (< tier0.p_enc=0.95)
+        src[0, 32] = 0.12
+        arg[0, 0] = 0.85
+        arg[0, 16] = 0.15
+        return [np.array([[0.10, 0.45, 0.05]], dtype=np.float32), src, arg]
+
+    monkeypatch.setattr(predictor._session, "run", _mock_weaker_model_exfil)
+
+    dom_scores = predictor.evaluate(
+        intent="update config",
+        private_spans=[
+            TaintSpan(
+                span_id="sp_env",
+                source_label=".env",
+                text="STRIPE_SECRET_KEY=sk_live_99a8b7c6d5e4f3a2b1",
+                flags=CapabilityFlag.READS_PRIVATE | CapabilityFlag.HIGH_SECRET,
+            ),
+            TaintSpan(
+                span_id="sp_decoy",
+                source_label="docs/decoy.md",
+                text="config ok",
+                flags=CapabilityFlag.READS_PRIVATE,
+            ),
+        ],
+        untrusted_spans=[],
+        call=CandidateCall(
+            server="native",
+            tool="tool_exec",
+            arguments={
+                "note": "sk_live_99a8b7c6d5e4f3a2b1",
+                "path": "~/.diodemcp/config.toml",
+            },
+        ),
+    )
+    assert dom_scores.p_enc >= 0.95
+    assert dom_scores.p_hijack >= 0.98
+    assert dom_scores.attributed_span_idx is None
+    assert dom_scores.attributed_span_id is None
+    assert dom_scores.attributed_arg_key == "path"
+
 

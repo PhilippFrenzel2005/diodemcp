@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 import json
-import math
 from pathlib import Path
 import threading
 from typing import Any
@@ -29,39 +28,28 @@ _ESC_MAX_BUCKET: int = 2048
 _PROB_EPSILON: float = 1e-5
 
 
-def _sanitize_probability_fail_closed(raw_value: Any) -> float:
-    """Coerce `NaN`, `+/-inf`, or out-of-range model outputs fail-closed to `1.0` (`C5.3`)."""
-    if isinstance(raw_value, bool):
-        return 1.0
+def _extract_valid_prob_row(raw_tensor: Any, expected_cols: int) -> np.ndarray | None:
+    """Return 1D finite probability row `[expected_cols]` in `[0.0, 1.0]` or `None` if invalid."""
     try:
-        val = float(raw_value)
-    except (TypeError, ValueError):
-        return 1.0
-    if math.isnan(val) or math.isinf(val):
-        return 1.0
-    if val < -_PROB_EPSILON or val > 1.0 + _PROB_EPSILON:
-        return 1.0
-    if val < 0.0:
-        return 0.0
-    if val > 1.0:
-        return 1.0
-    return val
-
-
-def _extract_valid_pointer_row(raw_tensor: Any, expected_cols: int) -> np.ndarray | None:
-    """Return 1D finite probability row `[expected_cols]` or `None` if malformed/non-finite."""
-    try:
-        arr = np.asarray(raw_tensor, dtype=np.float64)
+        raw_arr = np.asarray(raw_tensor)
     except (TypeError, ValueError):
         return None
-    if arr.ndim != 2 or arr.shape[0] < 1 or arr.shape[1] != expected_cols:
+    if (
+        raw_arr.dtype == np.bool_
+        or raw_arr.ndim != 2
+        or raw_arr.shape[0] < 1
+        or raw_arr.shape[1] != expected_cols
+    ):
         return None
-    row = arr[0]
+    try:
+        row = np.asarray(raw_arr[0], dtype=np.float64)
+    except (TypeError, ValueError):
+        return None
     if not np.all(np.isfinite(row)):
         return None
-    if np.any(row < -1e-4) or np.any(row > 1.0 + 1e-4):
+    if np.any(row < -_PROB_EPSILON) or np.any(row > 1.0 + _PROB_EPSILON):
         return None
-    return row
+    return np.clip(row, 0.0, 1.0)
 
 
 class OrtJevPredictor:
@@ -79,7 +67,7 @@ class OrtJevPredictor:
         ):
             raise ValueError("intra_op_threads must be a positive integer >= 1")
 
-        self.bundle_dir: Path = Path(bundle_dir)
+        self.bundle_dir: Path = Path(bundle_dir).expanduser()
         self.intra_op_threads: int = intra_op_threads
         self.manifest: BundleManifest = validate_bundle_dir(
             self.bundle_dir, verify_sha256=True
@@ -139,25 +127,18 @@ class OrtJevPredictor:
         if len(raw_outputs) != len(ONNX_OUTPUT_NAMES):
             return 1.0, 1.0, 1.0, None, None
 
-        try:
-            noul_arr = np.asarray(raw_outputs[0], dtype=np.float64)
-        except (TypeError, ValueError):
+        noul_row = _extract_valid_prob_row(raw_outputs[0], 3)
+        src_row = _extract_valid_prob_row(raw_outputs[1], self.manifest.max_pchunks + 1)
+        arg_row = _extract_valid_prob_row(raw_outputs[2], self.manifest.max_args + 1)
+        if noul_row is None or src_row is None or arg_row is None:
             return 1.0, 1.0, 1.0, None, None
 
-        if noul_arr.ndim != 2 or noul_arr.shape[0] < 1 or noul_arr.shape[1] != 3:
-            return 1.0, 1.0, 1.0, None, None
-
-        m_enc = _sanitize_probability_fail_closed(noul_arr[0, 0])
-        m_sem = _sanitize_probability_fail_closed(noul_arr[0, 1])
-        m_hijack = _sanitize_probability_fail_closed(noul_arr[0, 2])
-
-        src_row = _extract_valid_pointer_row(raw_outputs[1], self.manifest.max_pchunks + 1)
-        arg_row = _extract_valid_pointer_row(raw_outputs[2], self.manifest.max_args + 1)
-        return m_enc, m_sem, m_hijack, src_row, arg_row
+        return float(noul_row[0]), float(noul_row[1]), float(noul_row[2]), src_row, arg_row
 
     def _decode_model_attribution(
         self,
-        packed: PackedJevInputs,
+        packed_src: PackedJevInputs,
+        packed_arg: PackedJevInputs,
         private_spans: Sequence[TaintSpan],
         src_row: np.ndarray | None,
         arg_row: np.ndarray | None,
@@ -166,22 +147,22 @@ class OrtJevPredictor:
         model_span_id: str | None = None
         model_arg_key: str | None = None
 
-        if src_row is not None and packed.active_pchunk_count > 0:
-            active_src = src_row[: packed.active_pchunk_count]
+        if src_row is not None and packed_src.active_pchunk_count > 0:
+            active_src = src_row[: packed_src.active_pchunk_count]
             best_slot = int(np.argmax(active_src))
             none_src_prob = float(src_row[self.manifest.max_pchunks])
             if float(active_src[best_slot]) > none_src_prob:
-                orig_idx = packed.selected_span_indices[best_slot]
+                orig_idx = packed_src.selected_span_indices[best_slot]
                 if 0 <= orig_idx < len(private_spans):
                     model_span_idx = orig_idx
-                    model_span_id = packed.selected_span_ids[best_slot]
+                    model_span_id = packed_src.selected_span_ids[best_slot]
 
-        if arg_row is not None and len(packed.active_arg_keys) > 0:
-            active_args = arg_row[: len(packed.active_arg_keys)]
+        if arg_row is not None and len(packed_arg.active_arg_keys) > 0:
+            active_args = arg_row[: len(packed_arg.active_arg_keys)]
             best_arg_slot = int(np.argmax(active_args))
             none_arg_prob = float(arg_row[self.manifest.max_args])
             if float(active_args[best_arg_slot]) > none_arg_prob:
-                model_arg_key = packed.active_arg_keys[best_arg_slot]
+                model_arg_key = packed_arg.active_arg_keys[best_arg_slot]
 
         return model_span_idx, model_span_id, model_arg_key
 
@@ -203,6 +184,8 @@ class OrtJevPredictor:
 
         # 2. Default 512-token pre-selected Jev window inference
         packed = self.packer.pack(snapshot, call, max_bucket=DEFAULT_INFERENCE_BUCKET)
+        packed_src = packed
+        packed_arg = packed
         m_enc, m_sem, m_hijack, src_row, arg_row = self._run_ort_pass(packed)
         m_max = max(m_enc, m_sem, m_hijack)
 
@@ -214,7 +197,7 @@ class OrtJevPredictor:
             self.manifest.max_seq_len,
         )
 
-        # 3. Borderline under truncation: escalate once up to max_bucket=2048 (monotonic floor)
+        # 3. Borderline under truncation: escalate once up to max_bucket=2048 (per-head monotonic floor)
         if (
             packed.was_truncated
             and (_ESC_BORDERLINE_MIN <= m_max < critical_min)
@@ -227,9 +210,11 @@ class OrtJevPredictor:
             ):
                 e_enc, e_sem, e_hijack, e_src_row, e_arg_row = self._run_ort_pass(packed_esc)
                 e_max = max(e_enc, e_sem, e_hijack)
-                if e_max >= m_max:
-                    packed = packed_esc
+                if max(e_enc, e_sem) >= max(m_enc, m_sem):
+                    packed_src = packed_esc
                     src_row = e_src_row
+                if e_max >= m_max:
+                    packed_arg = packed_esc
                     arg_row = e_arg_row
                 m_enc = max(m_enc, e_enc)
                 m_sem = max(m_sem, e_sem)
@@ -243,9 +228,10 @@ class OrtJevPredictor:
         p_max = max(p_enc, p_sem, p_hijack)
         exfil_max = max(p_enc, p_sem)
         model_exfil_max = max(m_enc, m_sem)
+        tier0_exfil_max = max(tier0_scores.p_enc, tier0_scores.p_sem)
 
         model_span_idx, model_span_id, model_arg_key = self._decode_model_attribution(
-            packed, private_spans, src_row, arg_row
+            packed_src, packed_arg, private_spans, src_row, arg_row
         )
         if model_exfil_max < warn_min:
             model_span_idx = None
@@ -260,12 +246,12 @@ class OrtJevPredictor:
         if p_max >= warn_min:
             if exfil_max >= warn_min:
                 if (
-                    tier0_scores.p_enc >= model_exfil_max
+                    tier0_exfil_max >= model_exfil_max
                     and tier0_scores.attributed_span_idx is not None
                 ):
                     attributed_span_idx = tier0_scores.attributed_span_idx
                     attributed_span_id = tier0_scores.attributed_span_id
-                elif model_span_idx is not None:
+                elif model_span_idx is not None and model_exfil_max > tier0_exfil_max:
                     attributed_span_idx = model_span_idx
                     attributed_span_id = model_span_id
                 else:
@@ -274,7 +260,7 @@ class OrtJevPredictor:
 
             if tier0_scores.p_max >= m_max and tier0_scores.attributed_arg_key is not None:
                 attributed_arg_key = tier0_scores.attributed_arg_key
-            elif model_arg_key is not None:
+            elif model_arg_key is not None and m_max > tier0_scores.p_max:
                 attributed_arg_key = model_arg_key
             else:
                 attributed_arg_key = tier0_scores.attributed_arg_key

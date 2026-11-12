@@ -166,6 +166,7 @@ def build_synthetic_jev_onnx_bytes(
     *,
     inject_noul_values: tuple[float, float, float] | None = None,
     inject_src_nan: bool = False,
+    inject_arg_nan: bool = False,
 ) -> bytes:
     """Construct a ~50 KB `opset=17` ONNX v1 Jev cross-encoder with internal 4D `token_roles` mask."""
     vocab_size = max(vocab.values()) + 1
@@ -364,6 +365,8 @@ def build_synthetic_jev_onnx_bytes(
     w_arg_ptr[17, 19] = 1.5  # clipped q_arg (1.0 at dim 17) * none (1.0 at dim 19) * 1.5 = +1.5
     if inject_src_nan:
         w_src_ptr[16, 19] = np.float32(np.nan)
+    if inject_arg_nan:
+        w_arg_ptr[17, 19] = np.float32(np.nan)
 
     initializers = [
         numpy_helper.from_array(tok_emb, name="tok_emb"),
@@ -634,6 +637,7 @@ def write_synthetic_jev_bundle(
     thresholds: dict[str, float] | None = None,
     inject_noul_values: tuple[float, float, float] | None = None,
     inject_src_nan: bool = False,
+    inject_arg_nan: bool = False,
 ) -> Path:
     """Materialize a complete, SHA256-verified DiodeModelBundle v1 directory on disk."""
     bundle_dir.mkdir(parents=True, exist_ok=True)
@@ -643,6 +647,7 @@ def write_synthetic_jev_bundle(
         vocab,
         inject_noul_values=inject_noul_values,
         inject_src_nan=inject_src_nan,
+        inject_arg_nan=inject_arg_nan,
     )
     tok_bytes = tok.to_str().encode("utf-8")
     calibration_payload: dict[str, Any] = {
