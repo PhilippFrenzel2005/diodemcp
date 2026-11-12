@@ -33,6 +33,14 @@ from diodemcp.redactor import (
     redact_call_arguments,
 )
 from diodemcp.registry import CapabilityRegistry, canonicalize_target_path
+from diodemcp.shim import (
+    MAX_JSONRPC_LINE_BYTES,
+    async_run_http_bridge_shim,
+    async_run_stdio_shim,
+    run_http_bridge_shim,
+    run_stdio_shim,
+    validate_streamable_http_url,
+)
 from diodemcp.transport import (
     TransportAuthError,
     TransportConfig,
@@ -61,6 +69,7 @@ __all__ = [
     "EngineClient",
     "JevWindowPacker",
     "LedgerSnapshot",
+    "MAX_JSONRPC_LINE_BYTES",
     "MODEL_ALIASES",
     "OrtJevPredictor",
     "PackedJevInputs",
@@ -75,6 +84,8 @@ __all__ = [
     "TransportConfig",
     "TransportError",
     "TransportPermissionError",
+    "async_run_http_bridge_shim",
+    "async_run_stdio_shim",
     "build_redacted_audit_preview",
     "build_reference_4d_attn_mask",
     "canonicalize_target_path",
@@ -88,7 +99,10 @@ __all__ = [
     "flatten_call_arguments",
     "read_admin_secret",
     "redact_call_arguments",
+    "run_http_bridge_shim",
+    "run_stdio_shim",
     "sanitize_content_delimiters",
     "validate_bundle_dir",
+    "validate_streamable_http_url",
     "write_active_bundle_config",
 ]
