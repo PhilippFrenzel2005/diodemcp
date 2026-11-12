@@ -90,15 +90,15 @@ _MUTATION_INTENT_VERB_RE = re.compile(
 
 _SELF_PROTECTION_RE = re.compile(
     r"(?:"
-    r"(?:^|[~/\"'\s\\])\.diodemcp(?:[/\\\"'\s]|$)"
-    r"|(?:^|[/\\\"'\s])(?:engine\.sock|engine\.addr|admin\.secret)(?:[\"'\s]|$)"
-    r"|(?:^|[~/\"'\s\\])\.claude\.json(?:[\"'\s]|$)"
-    r"|(?:^|[~/\"'\s\\])\.claude[/\\]settings(?:\.[A-Za-z0-9_.-]+)?(?:[/\\\"'\s]|$)"
-    r"|(?:^|[~/\"'\s\\])\.mcp\.json(?:[\"'\s]|$)"
-    r"|(?:^|[~/\"'\s\\])\.cursor[/\\]mcp\.json(?:[\"'\s]|$)"
-    r"|(?:^|[~/\"'\s\\])\.vscode[/\\]mcp\.json(?:[\"'\s]|$)"
-    r"|(?:^|[/\\\"'\s])mcp_config\.json(?:[\"'\s]|$)"
-    r"|\bdiodemcp(?:\.exe)?\s+(?:allow|unwrap|model)\b"
+    r"(?:^|[~/\"'\s\\;|&><=()])\.diodemcp(?:[/\\\"'\s;|&><=()]|$)"
+    r"|(?:^|[/\\\"'\s;|&><=()])(?:engine\.sock|engine\.addr|admin\.secret)(?:[\"'\s;|&><=()]|$)"
+    r"|(?:^|[~/\"'\s\\;|&><=()])\.claude\.json(?:[\"'\s;|&><=()]|$)"
+    r"|(?:^|[~/\"'\s\\;|&><=()])\.claude[/\\]settings(?:\.[A-Za-z0-9_.-]+)?(?:[/\\\"'\s;|&><=()]|$)"
+    r"|(?:^|[~/\"'\s\\;|&><=()])\.mcp\.json(?:[\"'\s;|&><=()]|$)"
+    r"|(?:^|[~/\"'\s\\;|&><=()])\.cursor[/\\]mcp\.json(?:[\"'\s;|&><=()]|$)"
+    r"|(?:^|[~/\"'\s\\;|&><=()])\.vscode[/\\]mcp\.json(?:[\"'\s;|&><=()]|$)"
+    r"|(?:^|[/\\\"'\s;|&><=()])mcp_config\.json(?:[\"'\s;|&><=()]|$)"
+    r"|\bdiodemcp(?:\.(?:exe|mjs|py|cli))?\s+(?:allow|approve|unwrap|model|trust|shutdown)\b"
     r")",
     re.IGNORECASE,
 )
@@ -115,7 +115,7 @@ _SABOTAGE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     ),
     (
         re.compile(
-            r"(?:curl|wget|base64|printf|echo)\b[^\n]*\|\s*(?:sudo\s+)?(?:ba|z|da|k)?sh\b"
+            r"(?:curl|wget|base64|printf|echo)\b[^\n]{0,2048}\|\s*(?:sudo\s+)?(?:ba|z|da|k)?sh\b"
             r"|\b(?:ba|z)?sh\s+-c\s+[\"']?\$\((?:curl|wget)\b"
             r"|\beval\s+[\"']?\$\((?:curl|wget)\b",
             re.IGNORECASE,

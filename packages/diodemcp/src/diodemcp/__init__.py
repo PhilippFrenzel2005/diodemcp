@@ -38,7 +38,9 @@ from diodemcp.transport import (
     TransportConfig,
     TransportError,
     TransportPermissionError,
+    compute_popup_binding_sha256,
     default_transport,
+    ensure_admin_secret,
     read_admin_secret,
 )
 from diodemcp.types import CandidateCall, CapabilityFlag, DecisionScores, RiskBand, TaintSpan
@@ -76,11 +78,13 @@ __all__ = [
     "build_redacted_audit_preview",
     "build_reference_4d_attn_mask",
     "canonicalize_target_path",
+    "compute_popup_binding_sha256",
     "compute_simhash64",
     "compute_workspace_key",
     "default_transport",
     "download_and_verify_bundle",
     "encode_content_safe",
+    "ensure_admin_secret",
     "flatten_call_arguments",
     "read_admin_secret",
     "redact_call_arguments",
