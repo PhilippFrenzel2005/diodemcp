@@ -1259,3 +1259,461 @@ def test_from_pretrained_loads_masked_lm_and_causal_lm_checkpoints_bit_for_bit(t
     for k, ref_t in qw_ref_sd.items():
         assert torch.equal(ref_t, qw_got_sd[k]), f"Qwen3 backbone weight mismatch on {k}"
 
+
+# --------------------------------------------------------------------------------------
+# Task A5: Curriculum Trainer (`train.py`), Checkpoint Resume, Metrics & Colab Notebook
+# --------------------------------------------------------------------------------------
+def _tiny_curriculum_modernbert() -> ModernBERTJevModel:
+    torch.manual_seed(2027)
+    cfg = ModernBertConfig(
+        vocab_size=VOCAB,
+        hidden_size=16,
+        intermediate_size=32,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        local_attention=8,
+        max_position_embeddings=4096,
+        pad_token_id=PAD_ID,
+        bos_token_id=1,
+        eos_token_id=2,
+        cls_token_id=1,
+        sep_token_id=2,
+    )
+    return ModernBERTJevModel.from_config(cfg)
+
+
+def _tiny_curriculum_nano() -> NanoJevCausalModel:
+    torch.manual_seed(2028)
+    cfg = Qwen3Config(
+        vocab_size=VOCAB,
+        hidden_size=16,
+        intermediate_size=32,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=1,
+        head_dim=8,
+        max_position_embeddings=4096,
+        pad_token_id=PAD_ID,
+    )
+    return NanoJevCausalModel.from_config(cfg)
+
+
+def test_parquet_and_in_memory_dataset_batch_loading_and_dynamic_bucket_padding(tmp_path):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from diodemodel.dataset_packer import PACKED_PARQUET_SCHEMA
+    from diodemodel.train import (
+        CURRICULUM_BUCKETS,
+        align_row_to_bucket,
+        collate_jev_batch,
+        load_packed_jev_dataset,
+        make_synthetic_curriculum_dataset,
+    )
+
+    assert CURRICULUM_BUCKETS == (512, 1024, 4096)
+    rows = make_synthetic_curriculum_dataset(16, vocab_size=VOCAB, seed=42, pad_token_id=PAD_ID)
+    assert len(rows) == 16
+
+    # Write to Parquet using the normative PACKED_PARQUET_SCHEMA and reload.
+    pq_path = tmp_path / "synth_train.parquet"
+    pq_table = pa.Table.from_pylist(rows, schema=PACKED_PARQUET_SCHEMA)
+    pq.write_table(pq_table, pq_path)
+    loaded = load_packed_jev_dataset(pq_path)
+    assert len(loaded) == 16
+
+    # Also test loading in-memory rows using alias keys (src_target, arg_target, threat_category, variant_kind).
+    alias_row = {
+        "input_ids": list(rows[0]["input_ids"]),
+        "seg_ids": list(rows[0]["seg_ids"]),
+        "token_roles": list(rows[0]["token_roles"]),
+        "query_positions": list(rows[0]["query_positions"]),
+        "pchunk_positions": list(rows[0]["pchunk_positions"]),
+        "pchunk_valid_mask": list(rows[0]["pchunk_valid_mask"]),
+        "arg_positions": list(rows[0]["arg_positions"]),
+        "arg_valid_mask": list(rows[0]["arg_valid_mask"]),
+        "y_enc": rows[0]["y_enc"],
+        "y_sem": rows[0]["y_sem"],
+        "y_hijack": rows[0]["y_hijack"],
+        "src_target": rows[0]["target_src_idx"],
+        "arg_target": rows[0]["target_arg_idx"],
+        "threat_category": "T2",
+        "variant_kind": "BENIGN_TWIN",
+    }
+    alias_loaded = load_packed_jev_dataset([alias_row])
+    assert alias_loaded[0]["threat_category"] == "T2"
+    assert alias_loaded[0]["category"] == "T2"
+    assert alias_loaded[0]["variant_kind"] == "BENIGN_TWIN"
+    assert alias_loaded[0]["attack_family"] == "BENIGN_TWIN"
+    assert alias_loaded[0]["src_target"] == rows[0]["target_src_idx"]
+    assert alias_loaded[0]["arg_target"] == rows[0]["target_arg_idx"]
+
+    # Test dynamic bucket padding & clamping across 512, 1024, 4096.
+    for bucket_len in CURRICULUM_BUCKETS:
+        batch = collate_jev_batch(loaded[:6], bucket_len=bucket_len, pad_token_id=PAD_ID)
+        assert batch["input_ids"].shape == (6, bucket_len)
+        assert batch["seg_ids"].shape == (6, bucket_len)
+        assert batch["token_roles"].shape == (6, bucket_len)
+        assert batch["query_positions"].shape == (6, 5)
+        assert batch["pchunk_positions"].shape == (6, 33)
+        assert batch["pchunk_valid_mask"].shape == (6, 33)
+        assert batch["arg_positions"].shape == (6, 17)
+        assert batch["arg_valid_mask"].shape == (6, 17)
+        assert batch["noul_targets"].shape == (6, 3)
+        assert batch["y_enc"].shape == (6,)
+        assert batch["y_sem"].shape == (6,)
+        assert batch["y_hijack"].shape == (6,)
+        assert batch["src_target"].shape == (6,)
+        assert batch["arg_target"].shape == (6,)
+        assert torch.equal(batch["src_target"], batch["target_src_idx"])
+        assert torch.equal(batch["arg_target"], batch["target_arg_idx"])
+        assert len(batch["threat_category"]) == 6
+        assert len(batch["variant_kind"]) == 6
+
+        # Every position must be within [0, bucket_len - 1] and query positions must have ROLE_QUERY & seg_id 5.
+        assert bool((batch["query_positions"] >= 0).all() and (batch["query_positions"] < bucket_len).all())
+        assert bool((batch["pchunk_positions"] >= 0).all() and (batch["pchunk_positions"] < bucket_len).all())
+        assert bool((batch["arg_positions"] >= 0).all() and (batch["arg_positions"] < bucket_len).all())
+        for b in range(6):
+            for qp in batch["query_positions"][b].tolist():
+                assert int(batch["token_roles"][b, qp]) == ROLE_QUERY
+                assert int(batch["seg_ids"][b, qp]) == CANONICAL_SEGMENT_IDS["DECISION_QUERY"]
+            # Active pointer targets must always point to valid slots.
+            st = int(batch["src_target"][b].item())
+            at = int(batch["arg_target"][b].item())
+            assert bool(batch["pchunk_valid_mask"][b, st].item())
+            assert bool(batch["arg_valid_mask"][b, at].item())
+
+    # Test clamping a long row (unpadded_length=1200 > 512) whose attributed pchunk/arg sit at > 800.
+    long_batch_raw = make_batch(batch=1, length=1200, seed=99, n_state_min=1100, n_state_max=1150)
+    long_row = {
+        "input_ids": long_batch_raw["input_ids"][0].tolist(),
+        "seg_ids": long_batch_raw["seg_ids"][0].tolist(),
+        "token_roles": long_batch_raw["token_roles"][0].tolist(),
+        "query_positions": long_batch_raw["query_positions"][0].tolist(),
+        "pchunk_positions": [100, 900] + [1120] * 31,
+        "pchunk_valid_mask": [True, True] + [False] * 30 + [True],
+        "arg_positions": [120, 950] + [1120] * 15,
+        "arg_valid_mask": [True, True] + [False] * 14 + [True],
+        "y_enc": 1.0,
+        "y_sem": 0.0,
+        "y_hijack": 0.0,
+        "src_target": 1,  # slot 1 is at pos 900 (>= 512), so clamping to 512 evicts it!
+        "arg_target": 1,  # slot 1 is at pos 950 (>= 512), so clamping to 512 evicts it!
+        "threat_category": "T1",
+        "variant_kind": "prog_t1_leak",
+    }
+    aligned_512 = align_row_to_bucket(long_row, 512, pad_token_id=PAD_ID)
+    assert len(aligned_512["input_ids"]) == 512
+    assert aligned_512["pchunk_valid_mask"][0] is True
+    assert aligned_512["pchunk_valid_mask"][1] is False  # evicted by 512 clamp
+    assert aligned_512["src_target"] == 32  # safely remapped to <|none|>
+    assert aligned_512["arg_target"] == 16
+    assert aligned_512["y_enc"] == 0.0
+
+
+def test_stage2_hard_negative_reweighting_benign_twin_fp_and_t1_t2_fn():
+    from diodemodel.train import HARD_NEGATIVE_WEIGHT, compute_hard_negative_weights
+
+    assert HARD_NEGATIVE_WEIGHT == pytest.approx(3.0)
+    # 6 rows:
+    # 0: BENIGN_TWIN false positive (pred high, target 0) -> 3.0
+    # 1: Trifecta-Safe benign false positive (pred high, target 0) -> 3.0
+    # 2: BENIGN_TWIN true negative (pred low, target 0) -> 1.0
+    # 3: T1 obfuscated leak false negative (pred low, target y_enc=1) -> 3.0
+    # 4: T2 obfuscated leak false negative (pred low, target y_sem=1) -> 3.0
+    # 5: T1 leak true positive (pred high, target y_enc=1) -> 1.0
+    logits = torch.tensor(
+        [
+            [2.5, -3.0, -3.0],   # row 0: p_enc ~ 0.92 (FP on BENIGN_TWIN)
+            [-3.0, 2.0, -3.0],   # row 1: p_sem ~ 0.88 (FP on Trifecta-Safe)
+            [-3.0, -3.0, -3.0],  # row 2: p_max ~ 0.05 (TN on BENIGN_TWIN)
+            [-2.5, -3.0, -3.0],  # row 3: p_enc ~ 0.08 (FN on T1 leak)
+            [-3.0, -2.0, -3.0],  # row 4: p_sem ~ 0.12 (FN on T2 leak)
+            [3.0, -3.0, -3.0],   # row 5: p_enc ~ 0.95 (TP on T1 leak)
+        ],
+        dtype=torch.float32,
+    )
+    targets = torch.tensor(
+        [
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+    categories = ["T1", "T2", "T1", "T1", "T2", "T1"]
+    variants = [
+        "BENIGN_TWIN",
+        "Trifecta-Safe",
+        "BENIGN_TWIN",
+        "obfuscated_b64_leak",
+        "obfuscated_code_leak",
+        "obfuscated_b64_leak",
+    ]
+    is_trifecta = [True, True, True, False, False, False]
+
+    weights = compute_hard_negative_weights(
+        logits,
+        targets,
+        threat_categories=categories,
+        variant_kinds=variants,
+        is_trifecta_benign=is_trifecta,
+    )
+    expected = torch.tensor([3.0, 3.0, 1.0, 3.0, 3.0, 1.0], dtype=torch.float32)
+    torch.testing.assert_close(weights, expected)
+
+
+@pytest.mark.parametrize("arch", ["modernbert", "nano"])
+def test_two_stage_length_curriculum_trainer_512_1024_4096_and_live_telemetry(tmp_path, arch):
+    import json
+
+    from diodemodel.train import (
+        JevTrainerConfig,
+        make_synthetic_curriculum_dataset,
+        run_curriculum_training,
+    )
+
+    m = _tiny_curriculum_modernbert() if arch == "modernbert" else _tiny_curriculum_nano()
+    rows = make_synthetic_curriculum_dataset(16, vocab_size=VOCAB, seed=101, pad_token_id=PAD_ID)
+    val_rows = make_synthetic_curriculum_dataset(8, vocab_size=VOCAB, seed=202, pad_token_id=PAD_ID)
+
+    ckpt_dir = tmp_path / f"ckpt_{arch}"
+    status_log = ckpt_dir / "live_train_status.jsonl"
+    cfg = JevTrainerConfig(
+        curriculum_buckets=(512, 1024, 4096),
+        batch_size=2,
+        learning_rate=1e-3,
+        stage1_epochs=1,
+        stage2_epochs=1,
+        max_steps_per_bucket=1,
+        pad_token_id=PAD_ID,
+        checkpoint_dir=ckpt_dir,
+        status_log_path=status_log,
+        seed=42,
+    )
+
+    init_ptr_w = m.src_pointer.q_proj.weight.detach().clone()
+    init_noul_w = m.noul_head.dense.weight.detach().clone()
+
+    result = run_curriculum_training(m, rows, val_rows=val_rows, config=cfg)
+    assert result["global_step"] == 6  # 2 stages * 3 buckets * 1 step/bucket
+    assert result["buckets_visited"] == [512, 1024, 4096, 512, 1024, 4096]
+    assert result["stages_visited"] == [1, 2]
+    assert not torch.equal(m.src_pointer.q_proj.weight, init_ptr_w), "Stage 1 must update pointer head"
+    assert not torch.equal(m.noul_head.dense.weight, init_noul_w), "Noul head must update"
+    assert (ckpt_dir / "checkpoint_latest.pt").is_file()
+    assert status_log.is_file()
+
+    events = [json.loads(line) for line in status_log.read_text(encoding="utf-8").splitlines() if line.strip()]
+    step_events = [e for e in events if e.get("event") == "train_step"]
+    assert len(step_events) == 6
+    assert [e["bucket_len"] for e in step_events] == [512, 1024, 4096, 512, 1024, 4096]
+    assert [e["stage"] for e in step_events] == [1, 1, 1, 2, 2, 2]
+    assert any(e.get("event") == "stage2_hard_negative_step" or "hard_negative_fraction" in e for e in step_events[3:])
+
+
+def test_atomic_drive_checkpoint_save_and_exact_mid_curriculum_resume(tmp_path):
+    from diodemodel.train import (
+        JevTrainerConfig,
+        load_checkpoint,
+        make_synthetic_curriculum_dataset,
+        run_curriculum_training,
+    )
+
+    rows = make_synthetic_curriculum_dataset(16, vocab_size=VOCAB, seed=303, pad_token_id=PAD_ID)
+
+    # 1. Full uninterrupted 6-step curriculum run (Stage 1: 512, 1024, 4096; Stage 2: 512, 1024, 4096)
+    m_full = _tiny_curriculum_modernbert()
+    cfg_full = JevTrainerConfig(
+        curriculum_buckets=(512, 1024, 4096),
+        batch_size=2,
+        learning_rate=5e-4,
+        stage1_epochs=1,
+        stage2_epochs=1,
+        max_steps_per_bucket=1,
+        pad_token_id=PAD_ID,
+        checkpoint_dir=tmp_path / "full_ckpt",
+        seed=777,
+    )
+    res_full = run_curriculum_training(m_full, rows, config=cfg_full)
+    assert res_full["global_step"] == 6
+
+    # 2. Partial run stopping at max_steps=4 (mid-curriculum: Stage 2, bucket 512 completed; 1024 & 4096 remaining)
+    part_dir = tmp_path / "resume_ckpt"
+    m_part = _tiny_curriculum_modernbert()
+    cfg_part = JevTrainerConfig(
+        curriculum_buckets=(512, 1024, 4096),
+        batch_size=2,
+        learning_rate=5e-4,
+        stage1_epochs=1,
+        stage2_epochs=1,
+        max_steps_per_bucket=1,
+        max_steps=4,
+        pad_token_id=PAD_ID,
+        checkpoint_dir=part_dir,
+        seed=777,
+    )
+    res_part = run_curriculum_training(m_part, rows, config=cfg_part)
+    assert res_part["global_step"] == 4
+
+    latest_ckpt = part_dir / "checkpoint_latest.pt"
+    assert latest_ckpt.is_file()
+    # Atomic save must leave zero temporary files behind
+    assert list(part_dir.glob("*.tmp")) == []
+
+    ckpt_payload = load_checkpoint(latest_ckpt)
+    required_keys = {
+        "epoch",
+        "stage",
+        "bucket_len",
+        "global_step",
+        "model_state_dict",
+        "optimizer_state_dict",
+        "scheduler_state_dict",
+        "best_val_metric",
+        "rng_state",
+    }
+    assert required_keys.issubset(set(ckpt_payload.keys()))
+    assert ckpt_payload["global_step"] == 4
+    assert ckpt_payload["stage"] == 2
+    assert ckpt_payload["bucket_len"] == 512
+
+    # 3. Resume from checkpoint_latest.pt into a fresh model instance and finish steps 5..6
+    m_resumed = _tiny_curriculum_modernbert()
+    cfg_resume = JevTrainerConfig(
+        curriculum_buckets=(512, 1024, 4096),
+        batch_size=2,
+        learning_rate=5e-4,
+        stage1_epochs=1,
+        stage2_epochs=1,
+        max_steps_per_bucket=1,
+        max_steps=None,
+        pad_token_id=PAD_ID,
+        checkpoint_dir=part_dir,
+        seed=777,
+    )
+    res_resumed = run_curriculum_training(
+        m_resumed, rows, config=cfg_resume, resume_from=latest_ckpt
+    )
+    assert res_resumed["global_step"] == 6
+    assert res_resumed["resumed_from_step"] == 4
+    assert res_resumed["steps_executed_this_run"] == 2
+
+    for k, full_t in m_full.state_dict().items():
+        got_t = m_resumed.state_dict()[k]
+        torch.testing.assert_close(got_t, full_t, atol=1e-6, rtol=1e-6, msg=f"Mismatch on {k} after resume")
+
+
+def test_evaluate_jev_checkpoint_metrics_suite(tmp_path, model):
+    from diodemodel.train import (
+        JevTrainerConfig,
+        evaluate_jev_checkpoint,
+        make_synthetic_curriculum_dataset,
+        run_curriculum_training,
+    )
+
+    eval_rows = make_synthetic_curriculum_dataset(16, vocab_size=VOCAB, seed=555, pad_token_id=PAD_ID)
+    ckpt_dir = tmp_path / "eval_ckpt"
+    cfg = JevTrainerConfig(
+        curriculum_buckets=(512,),
+        batch_size=8,
+        learning_rate=5e-4,
+        stage1_epochs=1,
+        stage2_epochs=0,
+        max_steps_per_bucket=1,
+        pad_token_id=PAD_ID,
+        checkpoint_dir=ckpt_dir,
+    )
+    run_curriculum_training(model, eval_rows, config=cfg)
+    ckpt_path = ckpt_dir / "checkpoint_latest.pt"
+
+    metrics_from_model = evaluate_jev_checkpoint(model, eval_rows, bucket_len=512, pad_token_id=PAD_ID)
+    metrics_from_ckpt = evaluate_jev_checkpoint(
+        ckpt_path, eval_rows, model=model, bucket_len=512, pad_token_id=PAD_ID
+    )
+
+    for metrics in (metrics_from_model, metrics_from_ckpt):
+        assert "per_threat_recall" in metrics
+        for cat in ("T1", "T2", "T3", "T4", "T5", "T6", "T7"):
+            assert cat in metrics["per_threat_recall"]
+            assert 0.0 <= metrics["per_threat_recall"][cat] <= 1.0
+        assert 0.0 <= metrics["attack_recall"] <= 1.0
+        assert 0.0 <= metrics["flipjev_attack_recall"] <= 1.0
+        assert 0.0 <= metrics["flipjev_benign_dos_fpr"] <= 1.0
+        assert 0.0 <= metrics["trifecta_fpr"] <= 1.0
+        assert 0.0 <= metrics["src_pointer_top1_acc"] <= 1.0
+        assert 0.0 <= metrics["arg_pointer_top1_acc"] <= 1.0
+        assert 0.0 <= metrics["pointer_top1_acc"] <= 1.0
+        assert len(metrics["ece_per_head"]) == 3
+        assert len(metrics["brier_per_head"]) == 3
+        assert 0.0 <= metrics["ece_val"] <= 1.0
+        assert 0.0 <= metrics["brier"] <= 1.0
+        assert "calibration_report" in metrics
+        assert metrics["calibration_report"]["ece_val"] == pytest.approx(metrics["ece_val"])
+
+
+def test_train_cli_smoke_steps_cpu_under_5_seconds(tmp_path):
+    import time
+
+    from diodemodel.train import main as train_cli_main
+
+    ckpt_dir = tmp_path / "cli_smoke"
+    t0 = time.perf_counter()
+    rc = train_cli_main(
+        [
+            "--smoke-steps",
+            "2",
+            "--checkpoint-dir",
+            str(ckpt_dir),
+        ]
+    )
+    elapsed = time.perf_counter() - t0
+    assert rc == 0
+    assert elapsed < 5.0, f"Smoke CLI took {elapsed:.2f}s (must be < 5.0s)"
+    assert (ckpt_dir / "modernbert" / "checkpoint_latest.pt").is_file()
+    assert (ckpt_dir / "nanojev" / "checkpoint_latest.pt").is_file()
+    assert (ckpt_dir / "live_train_status.jsonl").is_file()
+
+
+def test_notebook_02_train_jev_models_structure_and_cells():
+    import json
+
+    nb_path = Path(__file__).resolve().parents[1] / "notebooks" / "02_train_jev_models.ipynb"
+    assert nb_path.is_file(), f"Missing Colab training notebook: {nb_path}"
+    nb = json.loads(nb_path.read_text(encoding="utf-8"))
+    assert nb["nbformat"] == 4
+    cells = nb["cells"]
+    assert len(cells) >= 6
+
+    code_sources: list[str] = []
+    for cell in cells:
+        if cell["cell_type"] == "code":
+            raw_lines = cell["source"] if isinstance(cell["source"], list) else cell["source"].splitlines(True)
+            clean_lines = [
+                line for line in raw_lines if not line.lstrip().startswith("!")
+            ]
+            src = "".join(clean_lines)
+            ast.parse(src)
+            code_sources.append("".join(raw_lines))
+
+    joined = "\n".join(code_sources)
+    for expected in (
+        "/content/drive",
+        "model_lab_src.tar.gz",
+        "DiodeMCP-Jev-Base-149M",
+        "answerdotai/ModernBERT-base",
+        "DiodeMCP-Jev-Large-395M",
+        "answerdotai/ModernBERT-large",
+        "DiodeMCP-NanoJev-0.6B",
+        "Qwen/Qwen3-0.6B-Base",
+        "gradient_checkpointing",
+        "bfloat16",
+        "/content/drive/MyDrive/diodemcp/checkpoints",
+    ):
+        assert expected in joined, f"Expected {expected!r} in 02_train_jev_models.ipynb"
+
+
