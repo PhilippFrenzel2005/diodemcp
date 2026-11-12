@@ -8,6 +8,7 @@ from collections import OrderedDict
 from collections.abc import Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
+import hmac
 import json
 import math
 import os
@@ -25,10 +26,19 @@ import urllib.parse
 
 from filelock import FileLock, Timeout as FileLockTimeout
 
+from diodemcp.bundle import compute_file_sha256
 from diodemcp.constants import (
     CRITICAL_THRESHOLD,
     DEFAULT_IDLE_TIMEOUT_SECONDS,
     WARN_THRESHOLD,
+)
+from diodemcp.ipc_client import (
+    AsyncEngineClient,
+    DEFAULT_IDLE_TIMEOUT,
+    EngineClient,
+    _UNSET_SECRET,
+    _normalize_client_workspace,
+    ensure_daemon_running,
 )
 from diodemcp.ledger import (
     MAX_OUTBOUND_BYTES_PER_DEST,
@@ -44,6 +54,8 @@ from diodemcp.predictor import (
     PredictorProtocol,
     Tier0DeterministicPredictor,
     _intent_explicitly_authorizes_copy,
+    extract_etld_plus_one,
+    normalize_nfkc_strip_cf,
 )
 from diodemcp.redactor import (
     build_redacted_audit_preview,
@@ -56,6 +68,9 @@ from diodemcp.registry import (
     _extract_shell_path_candidates,
     _normalize_server_and_tool,
     canonicalize_target_path,
+    expand_self_tamper_variants,
+    glob_token_matches_protected,
+    has_diodemcp_path_reference,
 )
 from diodemcp.transport import (
     MAX_IPC_LINE_BYTES,
@@ -82,8 +97,6 @@ from diodemcp.transport import (
     ensure_private_dir,
     is_pid_alive,
     sanitize_error_message,
-    send_rpc_async,
-    send_rpc_sync,
     unix_path_handle,
 )
 from diodemcp.types import CandidateCall, CapabilityFlag, DecisionScores, RiskBand, TaintSpan
@@ -100,7 +113,6 @@ PENDING_POPUP_RETENTION_SECONDS: float = 300.0
 _HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 _URL_EXTRACT_RE = re.compile(r"""https?://[^\s"'<>]+""", re.IGNORECASE)
 _UMASK_LOCK = threading.Lock()
-_UNSET_SECRET: Any = object()
 
 _TARGET_PATH_KEYS: tuple[str, ...] = (
     "file_path",
@@ -146,16 +158,22 @@ def write_active_bundle_config(
     bundle_dir: Path | str | None = None,
     tier0_only: bool = False,
 ) -> Path:
-    """Persist `<state_dir>/active_bundle.json` (`0600`) for daemon predictor initialization."""
+    """Persist `<state_dir>/active_bundle.json` (`0600`) with manifest hash pinning."""
     resolved_state = ensure_private_dir(Path(state_dir).expanduser())
     cfg_path = resolved_state / "active_bundle.json"
     resolved_bundle = (
         str(Path(bundle_dir).expanduser().resolve()) if bundle_dir is not None else None
     )
+    manifest_sha256: str | None = None
+    if resolved_bundle is not None and not tier0_only:
+        manifest_path = Path(resolved_bundle) / "manifest.json"
+        if manifest_path.is_file() and not manifest_path.is_symlink():
+            manifest_sha256 = compute_file_sha256(manifest_path)
     atomic_write_private_json(
         cfg_path,
         {
             "bundle_dir": resolved_bundle,
+            "manifest_sha256": manifest_sha256,
             "tier0_only": bool(tier0_only),
             "updated_at": time.time(),
         },
@@ -180,6 +198,22 @@ def _is_safe_0600_regular_file(path: Path) -> bool:
     return True
 
 
+def _verify_active_bundle_manifest(
+    bundle_dir: Path,
+    expected_sha256: Any,
+) -> None:
+    if not isinstance(expected_sha256, str) or not _HEX64_RE.fullmatch(
+        expected_sha256.strip().lower()
+    ):
+        raise ValueError("active_bundle.json missing valid manifest_sha256")
+    manifest_path = bundle_dir / "manifest.json"
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        raise ValueError("Bundle manifest.json is missing or a symlink")
+    actual_sha = compute_file_sha256(manifest_path)
+    if not constant_time_ascii_equals(actual_sha, expected_sha256.strip().lower()):
+        raise ValueError("Bundle manifest_sha256 mismatch in active_bundle.json")
+
+
 def _load_configured_predictor(
     state_dir: Path,
     explicit_bundle_dir: Path | str | None = None,
@@ -197,7 +231,9 @@ def _load_configured_predictor(
                 return Tier0DeterministicPredictor(), "tier0"
             cfg_bundle = data.get("bundle_dir")
             if isinstance(cfg_bundle, str) and cfg_bundle.strip():
-                ort_pred = OrtJevPredictor(Path(cfg_bundle))
+                bundle_path = Path(cfg_bundle)
+                _verify_active_bundle_manifest(bundle_path, data.get("manifest_sha256"))
+                ort_pred = OrtJevPredictor(bundle_path)
                 return ort_pred, f"ort:{ort_pred.manifest.model_id}"
 
     default_current = state_dir / "models" / "current"
@@ -239,18 +275,55 @@ def _extract_write_body_text(arguments: Mapping[str, Any]) -> str:
     return "\n".join(parts)
 
 
-def _extract_destination_key(call: CandidateCall) -> str:
+def _extract_destination_keys(call: CandidateCall) -> list[str]:
+    """Extract unique eTLD+1 destination keys from all valid URLs across flattened args."""
     flat = flatten_call_arguments(call.arguments, max_args=None)
+    keys: list[str] = []
+    seen: set[str] = set()
     for val in flat.values():
         if not val:
             continue
-        m = _URL_EXTRACT_RE.search(val)
-        if m is not None:
-            parsed = urllib.parse.urlsplit(m.group(0))
-            if parsed.hostname:
-                return parsed.hostname.lower()
-    norm_srv, norm_tool = _normalize_server_and_tool(call.server, call.tool)
-    return norm_srv or norm_tool or "default"
+        for m in _URL_EXTRACT_RE.finditer(val):
+            raw_url = m.group(0).rstrip(".,;:)]}>'\"")
+            try:
+                parsed = urllib.parse.urlsplit(raw_url)
+            except ValueError:
+                continue
+            host = parsed.hostname
+            if host:
+                key = extract_etld_plus_one(host) or host.lower()
+                if key not in seen:
+                    seen.add(key)
+                    keys.append(key)
+    if not keys:
+        norm_srv, norm_tool = _normalize_server_and_tool(call.server, call.tool)
+        keys.append(norm_srv or norm_tool or "default")
+    return keys
+
+
+def _extract_destination_key(call: CandidateCall) -> str:
+    return _extract_destination_keys(call)[0]
+
+
+def _extract_shell_command_text(arguments: Mapping[str, Any]) -> str:
+    for key in ("command", "cmd", "script", "shell_command"):
+        val = arguments.get(key)
+        if isinstance(val, str) and val.strip():
+            return val
+    return ""
+
+
+def _find_git_workspace_root(real_path: Path) -> Path:
+    """Walk up ancestors from `real_path` to nearest `.git` directory/file, else `real_path`."""
+    cur = real_path
+    while True:
+        if (cur / ".git").exists():
+            return cur
+        parent = cur.parent
+        if parent == cur:
+            break
+        cur = parent
+    return real_path
 
 
 def _canonical_args_sha256(arguments: Mapping[str, Any] | None) -> str:
@@ -349,17 +422,6 @@ def _resolve_leaked_span(
     return None
 
 
-def _normalize_client_workspace(workspace_root: Path | str | None) -> str:
-    if workspace_root is None:
-        return os.path.realpath(os.getcwd())
-    if not isinstance(workspace_root, (str, os.PathLike)):
-        raise ValueError("workspace_root must be a path string or Path")
-    raw = os.fspath(workspace_root)
-    if not isinstance(raw, str) or not raw.strip() or "\x00" in raw:
-        raise ValueError("workspace_root must be a non-empty path")
-    return os.path.abspath(os.path.expanduser(raw.strip()))
-
-
 class DiodeEngineServer:
     """Persistent workspace taint engine and split-credential approval router (`R4`, `R7`, `C4`-`C7`)."""
 
@@ -369,7 +431,7 @@ class DiodeEngineServer:
         *,
         predictor: PredictorProtocol | None = None,
         bundle_dir: Path | str | None = None,
-        idle_timeout_s: float = float(DEFAULT_IDLE_TIMEOUT_SECONDS),
+        idle_timeout_s: float = DEFAULT_IDLE_TIMEOUT,
         approval_ttl_s: float = DEFAULT_APPROVAL_TTL_SECONDS,
     ) -> None:
         if idle_timeout_s <= 0.0:
@@ -379,18 +441,6 @@ class DiodeEngineServer:
 
         self.config: TransportConfig = config if config is not None else default_transport()
         ensure_private_dir(self.config.state_dir)
-        self._real_state_dir_fold: str = canonicalize_target_path(
-            os.fspath(self.config.state_dir), casefold=True
-        ).rstrip("/")
-        self._protected_exact_paths_fold: frozenset[str] = frozenset(
-            canonicalize_target_path(os.fspath(p), casefold=True)
-            for p in (
-                self.config.socket_path,
-                self.config.addr_file,
-                self.config.admin_secret_file,
-                self.config.lock_file,
-            )
-        )
         self._sessions_dir: Path = ensure_private_dir(self.config.state_dir / "sessions")
         self._audit_path: Path = self.config.state_dir / "audit.jsonl"
         self._incidents_path: Path = self.config.state_dir / "incidents.json"
@@ -413,6 +463,52 @@ class DiodeEngineServer:
                 self.config.state_dir, bundle_dir
             )
 
+        self._real_state_dir_fold: str = canonicalize_target_path(
+            os.fspath(self.config.state_dir), casefold=True
+        ).rstrip("/")
+        protected_dirs: list[str] = []
+        if self._real_state_dir_fold:
+            protected_dirs.append(self._real_state_dir_fold)
+        bundle_candidates: list[Path | str] = []
+        if bundle_dir is not None:
+            bundle_candidates.append(bundle_dir)
+        pred_bundle_dir = getattr(self._predictor, "bundle_dir", None)
+        if pred_bundle_dir is not None:
+            bundle_candidates.append(pred_bundle_dir)
+        active_cfg_file = self.config.state_dir / "active_bundle.json"
+        if _is_safe_0600_regular_file(active_cfg_file):
+            try:
+                cfg_data = json.loads(active_cfg_file.read_text(encoding="utf-8"))
+                if isinstance(cfg_data, dict) and isinstance(cfg_data.get("bundle_dir"), str):
+                    bundle_candidates.append(cfg_data["bundle_dir"])
+            except Exception:
+                pass
+
+        exact_targets: list[Path] = [
+            self.config.socket_path,
+            self.config.addr_file,
+            self.config.admin_secret_file,
+            self.config.lock_file,
+            self.config.state_dir / "active_bundle.json",
+            self._incidents_path,
+            self._audit_path,
+            self.config.state_dir / "config.toml",
+        ]
+        for cand in bundle_candidates:
+            bpath = Path(cand).expanduser()
+            canon_bdir = canonicalize_target_path(os.fspath(bpath), casefold=True).rstrip("/")
+            if canon_bdir and canon_bdir not in protected_dirs:
+                protected_dirs.append(canon_bdir)
+            exact_targets.append(bpath / "manifest.json")
+            exact_targets.append(bpath / "model.onnx")
+            exact_targets.append(bpath / "tokenizer.json")
+
+        self._protected_dirs_fold: tuple[str, ...] = tuple(protected_dirs)
+        self._protected_exact_paths_fold: frozenset[str] = frozenset(
+            canonicalize_target_path(os.fspath(p), casefold=True)
+            for p in exact_targets
+        )
+
         self._state_lock = threading.RLock()
         self._replay_lock = threading.Lock()
         self._seen_nonces: OrderedDict[tuple[str, str], float] = OrderedDict()
@@ -433,6 +529,8 @@ class DiodeEngineServer:
         self._incidents: dict[str, dict[str, Any]] = {}
         self._incident_order: list[str] = []
         self._approval_monotonic_deadlines: dict[str, float] = {}
+        self._pending_incident_calls: dict[str, CandidateCall] = {}
+        self._committed_outbound_shas: OrderedDict[tuple[str, str, str, str], int] = OrderedDict()
         self._rehydrate_incidents()
         self._active_incident_count = len(self._incidents)
 
@@ -455,6 +553,29 @@ class DiodeEngineServer:
             )
         return WARN_THRESHOLD, CRITICAL_THRESHOLD
 
+    def _compute_incident_approval_hmac(self, inc: Mapping[str, Any]) -> str:
+        payload = {
+            "incident_id": str(inc.get("incident_id", "")),
+            "workspace_key": str(inc.get("workspace_key", "")),
+            "server": str(inc.get("server", "")),
+            "tool": str(inc.get("tool", "")),
+            "canonical_args_sha256": str(inc.get("canonical_args_sha256", "")),
+            "approved_until": inc.get("approved_until"),
+        }
+        msg = json.dumps(
+            payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        ).encode("utf-8")
+        return hmac.new(
+            self._admin_secret.encode("utf-8"), msg, hashlib.sha256
+        ).hexdigest()
+
+    def _verify_incident_approval_hmac(self, inc: Mapping[str, Any]) -> bool:
+        mac = inc.get("approval_hmac")
+        if not isinstance(mac, str) or not _HEX64_RE.fullmatch(mac.strip().lower()):
+            return False
+        expected = self._compute_incident_approval_hmac(inc)
+        return constant_time_ascii_equals(mac.strip().lower(), expected)
+
     def _rehydrate_incidents(self) -> None:
         if not _is_safe_0600_regular_file(self._incidents_path):
             return
@@ -473,9 +594,13 @@ class DiodeEngineServer:
             for item in items[-MAX_STORED_INCIDENTS:]:
                 if isinstance(item, dict) and isinstance(item.get("incident_id"), str):
                     inc_id = item["incident_id"]
+                    app_until = item.get("approved_until")
+                    if app_until is not None and not self._verify_incident_approval_hmac(item):
+                        item["approved_until"] = None
+                        item["approval_hmac"] = None
+                        app_until = None
                     self._incidents[inc_id] = item
                     self._incident_order.append(inc_id)
-                    app_until = item.get("approved_until")
                     if (
                         not item.get("consumed", False)
                         and isinstance(app_until, (int, float))
@@ -499,6 +624,8 @@ class DiodeEngineServer:
             return False
         approved_until = inc.get("approved_until")
         if approved_until is None or isinstance(approved_until, bool):
+            return False
+        if not self._verify_incident_approval_hmac(inc):
             return False
         try:
             wall_exp = float(approved_until)
@@ -561,6 +688,7 @@ class DiodeEngineServer:
             evicted_id = self._incident_order.pop(victim_idx)
             self._incidents.pop(evicted_id, None)
             self._approval_monotonic_deadlines.pop(evicted_id, None)
+            self._pending_incident_calls.pop(evicted_id, None)
 
     def _persist_incidents(self) -> None:
         self._evict_excess_incidents()
@@ -574,7 +702,9 @@ class DiodeEngineServer:
         }
         atomic_write_private_json(self._incidents_path, payload)
 
-    def _resolve_workspace(self, workspace_root: Path | str | None) -> tuple[Path, str]:
+    def _resolve_workspace_and_cwd(
+        self, workspace_root: Path | str | None
+    ) -> tuple[Path, str, Path]:
         if workspace_root is None:
             raise ValueError("workspace_root is required and must not be None")
         if not isinstance(workspace_root, (str, os.PathLike)):
@@ -585,18 +715,29 @@ class DiodeEngineServer:
         expanded = os.path.expanduser(raw.strip())
         if not os.path.isabs(expanded):
             raise ValueError("workspace_root must be an absolute path")
-        real_ws = Path(os.path.realpath(expanded))
+        call_cwd = Path(os.path.realpath(expanded))
+        real_ws = _find_git_workspace_root(call_cwd)
         ws_key = compute_workspace_key(real_ws)
+        return real_ws, ws_key, call_cwd
+
+    def _resolve_workspace(self, workspace_root: Path | str | None) -> tuple[Path, str]:
+        real_ws, ws_key, _call_cwd = self._resolve_workspace_and_cwd(workspace_root)
         return real_ws, ws_key
 
-    def _get_ledger(self, workspace_root: Path | str | None) -> tuple[Path, SessionLedger]:
-        real_ws, ws_key = self._resolve_workspace(workspace_root)
+    def _get_ledger_and_cwd(
+        self, workspace_root: Path | str | None
+    ) -> tuple[Path, Path, SessionLedger]:
+        real_ws, ws_key, call_cwd = self._resolve_workspace_and_cwd(workspace_root)
         ledger = self._ledgers.get(ws_key)
         if ledger is None:
             persist_file = self._sessions_dir / f"{ws_key}.json"
             ledger = SessionLedger(workspace_root=real_ws, persist_path=persist_file)
             self._ledgers[ws_key] = ledger
             self._active_workspace_count = len(self._ledgers)
+        return real_ws, call_cwd, ledger
+
+    def _get_ledger(self, workspace_root: Path | str | None) -> tuple[Path, SessionLedger]:
+        real_ws, _call_cwd, ledger = self._get_ledger_and_cwd(workspace_root)
         return real_ws, ledger
 
     def _get_registry(self, real_ws: Path) -> CapabilityRegistry:
@@ -638,12 +779,11 @@ class DiodeEngineServer:
             return False
         if folded_canon in self._protected_exact_paths_fold:
             return True
-        if self._real_state_dir_fold:
-            if (
-                folded_canon == self._real_state_dir_fold
-                or folded_canon.startswith(f"{self._real_state_dir_fold}/")
-            ):
+        for pdir in self._protected_dirs_fold:
+            if folded_canon == pdir or folded_canon.startswith(f"{pdir}/"):
                 return True
+        if has_diodemcp_path_reference(folded_canon):
+            return True
         return False
 
     def _is_active_state_self_tamper(
@@ -654,9 +794,17 @@ class DiodeEngineServer:
         args: dict[str, Any],
     ) -> bool:
         norm_srv, norm_tool = _normalize_server_and_tool(server, tool)
-        for folded in registry._canonical_folded_paths(_extract_path_values(args)):
-            if self._matches_active_state_path(folded):
+        protected_targets = tuple(self._protected_exact_paths_fold) + self._protected_dirs_fold
+        for raw_path in _extract_path_values(args):
+            if has_diodemcp_path_reference(raw_path):
                 return True
+            if glob_token_matches_protected(
+                raw_path, protected_targets, registry.workspace_root
+            ):
+                return True
+            for folded in registry._canonical_folded_paths([raw_path]):
+                if self._matches_active_state_path(folded):
+                    return True
 
         strings: list[str] = []
         _collect_strings_for_self_tamper(
@@ -665,11 +813,20 @@ class DiodeEngineServer:
             skip_file_body_keys=registry._is_file_write_call(norm_srv, norm_tool, args),
         )
         for text in strings:
-            for folded_tok in registry._canonical_folded_paths(
-                _extract_shell_path_candidates(text)
-            ):
-                if self._matches_active_state_path(folded_tok):
+            for variant in expand_self_tamper_variants(text):
+                if has_diodemcp_path_reference(variant):
                     return True
+                tokens = _extract_shell_path_candidates(variant)
+                for tok in tokens:
+                    if has_diodemcp_path_reference(tok):
+                        return True
+                    if glob_token_matches_protected(
+                        tok, protected_targets, registry.workspace_root
+                    ):
+                        return True
+                for folded_tok in registry._canonical_folded_paths(tokens):
+                    if self._matches_active_state_path(folded_tok):
+                        return True
         return False
 
     def _commit_allowed_call_effects(
@@ -678,17 +835,40 @@ class DiodeEngineServer:
         ledger: SessionLedger,
         req_flags: CapabilityFlag,
         call: CandidateCall,
+        *,
+        call_cwd: Path | None = None,
     ) -> None:
-        if bool(req_flags & CapabilityFlag.WRITES_EXTERNAL):
-            dest_key = _extract_destination_key(call)
-            ledger.record_outbound_call(dest_key, call)
-
         norm_srv, norm_tool = _normalize_server_and_tool(call.server, call.tool)
+        if bool(req_flags & CapabilityFlag.WRITES_EXTERNAL):
+            for dest_key in _extract_destination_keys(call):
+                ledger.record_outbound_call(dest_key, call)
+            sha_key = (
+                ledger.workspace_key,
+                norm_srv,
+                norm_tool,
+                _canonical_args_sha256(call.arguments),
+            )
+            self._committed_outbound_shas[sha_key] = (
+                self._committed_outbound_shas.get(sha_key, 0) + 1
+            )
+            self._committed_outbound_shas.move_to_end(sha_key)
+            while len(self._committed_outbound_shas) > 64:
+                self._committed_outbound_shas.popitem(last=False)
+
         if registry._is_file_write_call(norm_srv, norm_tool, call.arguments):
             target_path = _extract_primary_path_arg(call.arguments)
             written_body = _extract_write_body_text(call.arguments)
             if target_path and written_body:
                 ledger.record_local_write(target_path, written_body)
+
+        if registry._is_shell_call(norm_srv, norm_tool):
+            cmd_text = _extract_shell_command_text(call.arguments)
+            if cmd_text:
+                ledger.record_shell_side_effects(
+                    cmd_text,
+                    call_cwd=call_cwd or ledger.workspace_root,
+                    is_high_secret_path_fn=registry._private_sources.matches_high_secret_path,
+                )
 
     def _check_rolling_outbound_floor(
         self,
@@ -700,57 +880,96 @@ class DiodeEngineServer:
     ) -> DecisionScores | None:
         if not private_spans:
             return None
-        dest_key = _extract_destination_key(call)
-        prior_hist = ledger._outbound_history.get(dest_key)
-        if not prior_hist:
-            return None
-
         flat = flatten_call_arguments(call.arguments, max_args=None)
         if not flat:
             return None
         bounded_entry = {
             k: _utf8_truncate_tail(v, MAX_OUTBOUND_BYTES_PER_DEST) for k, v in flat.items()
         }
-        preview_hist = [*prior_hist[-(MAX_OUTBOUND_CALLS_PER_DEST - 1) :], bounded_entry]
-        reassembled = _reassemble_outbound_window(preview_hist, MAX_OUTBOUND_BYTES_PER_DEST)
-        if not reassembled:
-            return None
-
         primary_arg = next(iter(call.arguments.keys()), None)
         synth_key = primary_arg if primary_arg is not None else "_rolling_outbound"
-        synth_call = CandidateCall(
-            server=call.server,
-            tool=call.tool,
-            arguments={synth_key: reassembled},
-        )
-        return self._tier0.evaluate(
-            intent=intent,
-            private_spans=private_spans,
-            untrusted_spans=untrusted_spans,
-            call=synth_call,
-        )
+
+        candidate_keys = list(_extract_destination_keys(call))
+        if "__session__" not in candidate_keys:
+            candidate_keys.append("__session__")
+
+        best: DecisionScores | None = None
+        for dest_key in candidate_keys:
+            prior_hist = ledger._outbound_history.get(dest_key)
+            if not prior_hist:
+                continue
+            preview_hist = [
+                *prior_hist[-(MAX_OUTBOUND_CALLS_PER_DEST - 1) :],
+                bounded_entry,
+            ]
+            reassembled = _reassemble_outbound_window(
+                preview_hist, MAX_OUTBOUND_BYTES_PER_DEST
+            )
+            if not reassembled:
+                continue
+            synth_call = CandidateCall(
+                server=call.server,
+                tool=call.tool,
+                arguments={synth_key: reassembled},
+            )
+            res = self._tier0.evaluate(
+                intent=intent,
+                private_spans=private_spans,
+                untrusted_spans=untrusted_spans,
+                call=synth_call,
+            )
+            best = res if best is None else _merge_floor_scores(best, res)
+        return best
 
     def _check_tainted_local_write_floor(
         self,
         ledger: SessionLedger,
+        registry: CapabilityRegistry,
         private_spans: list[TaintSpan],
+        untrusted_spans: list[TaintSpan],
         intent: str | None,
         call: CandidateCall,
+        *,
+        call_cwd: Path,
+        writes_external: bool,
     ) -> DecisionScores | None:
-        tainted_ids: set[str] = set()
-        for id_set in ledger._tainted_paths.values():
-            tainted_ids.update(id_set)
-
-        matched: list[tuple[int, TaintSpan]] = []
-        for idx, sp in enumerate(private_spans):
-            if sp.span_id in tainted_ids or sp.source_label.startswith("staged_write:"):
-                matched.append((idx, sp))
-
-        if not matched:
+        matched_ids, matched_hs_path, matched_untrusted_path = ledger.matched_tainted_span_ids_for_call(
+            call,
+            call_cwd=call_cwd,
+            include_private_reads_for_outbound=writes_external,
+            is_high_secret_path_fn=registry._private_sources.matches_high_secret_path,
+        )
+        if not matched_ids and not matched_hs_path and not matched_untrusted_path:
             return None
 
         first_arg = next(iter(call.arguments.keys()), None)
-        for idx, sp in matched:
+        matched_priv: list[tuple[int, TaintSpan]] = [
+            (idx, sp)
+            for idx, sp in enumerate(private_spans)
+            if sp.span_id in matched_ids
+        ]
+        matched_untrust: list[tuple[int, TaintSpan]] = [
+            (idx, sp)
+            for idx, sp in enumerate(untrusted_spans)
+            if sp.span_id in matched_ids
+        ]
+
+        if matched_hs_path and writes_external:
+            best_idx = matched_priv[0][0] if matched_priv else None
+            best_id = matched_priv[0][1].span_id if matched_priv else None
+            return DecisionScores(
+                p_enc=0.95,
+                p_sem=0.0,
+                p_hijack=0.0,
+                attributed_span_idx=best_idx,
+                attributed_span_id=best_id,
+                attributed_arg_key=first_arg,
+            )
+
+        best_score: DecisionScores | None = None
+        clean_intent = (intent or "").strip()
+
+        for idx, sp in matched_priv:
             if bool(sp.flags & CapabilityFlag.HIGH_SECRET):
                 return DecisionScores(
                     p_enc=0.95,
@@ -760,20 +979,33 @@ class DiodeEngineServer:
                     attributed_span_id=sp.span_id,
                     attributed_arg_key=first_arg,
                 )
+            if clean_intent and _intent_explicitly_authorizes_copy(clean_intent, sp):
+                cand = DecisionScores(p_enc=0.08, p_sem=0.0, p_hijack=0.0)
+            else:
+                cand = DecisionScores(
+                    p_enc=0.88,
+                    p_sem=0.0,
+                    p_hijack=0.0,
+                    attributed_span_idx=idx,
+                    attributed_span_id=sp.span_id,
+                    attributed_arg_key=first_arg,
+                )
+            best_score = cand if best_score is None else _merge_floor_scores(best_score, cand)
 
-        idx0, sp0 = matched[0]
-        clean_intent = (intent or "").strip()
-        if clean_intent and _intent_explicitly_authorizes_copy(clean_intent, sp0):
-            return DecisionScores(p_enc=0.08, p_sem=0.0, p_hijack=0.0)
+        if matched_untrust or matched_untrusted_path:
+            cand_hijack = DecisionScores(
+                p_enc=0.0,
+                p_sem=0.0,
+                p_hijack=0.72,
+                attributed_arg_key=first_arg,
+            )
+            best_score = (
+                cand_hijack
+                if best_score is None
+                else _merge_floor_scores(best_score, cand_hijack)
+            )
 
-        return DecisionScores(
-            p_enc=0.88,
-            p_sem=0.0,
-            p_hijack=0.0,
-            attributed_span_idx=idx0,
-            attributed_span_id=sp0.span_id,
-            attributed_arg_key=first_arg,
-        )
+        return best_score
 
     def _build_reason_summary(
         self,
@@ -947,11 +1179,12 @@ class DiodeEngineServer:
 
         # Phase 1 (under _state_lock): fast state snapshot, single-use approval check, and fast-path gate
         with self._state_lock:
-            real_ws, ledger = self._get_ledger(workspace_root)
+            real_ws, call_cwd, ledger = self._get_ledger_and_cwd(workspace_root)
             registry = self._get_registry(real_ws)
             ws_key = ledger.workspace_key
 
             req_flags = registry.classify_request(server, tool, call.arguments)
+            is_known_safe = registry.is_known_safe_tool(server, tool, call.arguments)
             is_self_tamper = registry.is_unconditional_critical_self_tamper(
                 server, tool, call.arguments
             ) or self._is_active_state_self_tamper(
@@ -966,7 +1199,15 @@ class DiodeEngineServer:
                 and not writes_ext
                 and not mutates_sens
             )
-            touches_tainted_write = ledger.touches_tainted_local_write(call)
+            matched_tainted_ids, matched_hs_path, matched_untrusted_path = ledger.matched_tainted_span_ids_for_call(
+                call,
+                call_cwd=call_cwd,
+                include_private_reads_for_outbound=writes_ext,
+                is_high_secret_path_fn=registry._private_sources.matches_high_secret_path,
+            )
+            touches_tainted_write = bool(
+                matched_tainted_ids or matched_hs_path or matched_untrusted_path
+            )
             effective_tainted_write_sink = bool(
                 touches_tainted_write and not is_pure_local_rw
             )
@@ -974,6 +1215,9 @@ class DiodeEngineServer:
             snap = ledger.snapshot()
             phase1_priv_list = list(snap.private_spans)
             untrust_list = list(snap.untrusted_spans)
+            phase1_priv_ids = tuple(sp.span_id for sp in phase1_priv_list)
+            phase1_untrust_ids = tuple(sp.span_id for sp in untrust_list)
+            phase1_intent = snap.intent
 
             # Step 2: Single-use out-of-band human approval replay check
             app_status, matched_approval = self._consume_matching_approval(
@@ -997,6 +1241,7 @@ class DiodeEngineServer:
                     "workspace_key": ws_key,
                     "is_self_tamper": is_self_tamper,
                     "reason": "Failed to persist single-use approval consumption; failing closed.",
+                    "reason_codes": [],
                     "banner": "🛑 CRITICAL DiodeMCP Alert (1.00): Failed to persist approval consumption.",
                     "message": (
                         f"Blocked by DiodeMCP (incident {inc_id_fail}). "
@@ -1011,7 +1256,9 @@ class DiodeEngineServer:
                     )
                 )
                 leaked_sp = _resolve_leaked_span(approved_scores, phase1_priv_list)
-                self._commit_allowed_call_effects(registry, ledger, req_flags, call)
+                self._commit_allowed_call_effects(
+                    registry, ledger, req_flags, call, call_cwd=call_cwd
+                )
                 self._write_audit_decision(
                     decision="ALLOW_APPROVED",
                     action="allow",
@@ -1034,6 +1281,7 @@ class DiodeEngineServer:
                     "tool": tool,
                     "workspace_key": ws_key,
                     "is_self_tamper": is_self_tamper,
+                    "reason_codes": [],
                     "approved_incident_id": matched_approval["incident_id"],
                 }
 
@@ -1046,11 +1294,14 @@ class DiodeEngineServer:
                     req_flags,
                     is_self_tamper=False,
                     touches_tainted_local_write=effective_tainted_write_sink,
+                    is_known_safe_tool=is_known_safe,
                 ) and not (writes_ext and has_untrusted_any)
 
                 if can_fast_path:
                     fast_scores = DecisionScores(p_enc=0.0, p_sem=0.0, p_hijack=0.0)
-                    self._commit_allowed_call_effects(registry, ledger, req_flags, call)
+                    self._commit_allowed_call_effects(
+                        registry, ledger, req_flags, call, call_cwd=call_cwd
+                    )
                     self._write_audit_decision(
                         decision="ALLOW_FAST_PATH",
                         action="allow",
@@ -1072,11 +1323,13 @@ class DiodeEngineServer:
                         "tool": tool,
                         "workspace_key": ws_key,
                         "is_self_tamper": False,
+                        "reason_codes": [],
                     }
 
-        # Phase 2 (OUTSIDE _state_lock): run Tier0 + ORT/Predictor over immutable snapshot
+        # Phase 2 (OUTSIDE _state_lock): single Tier0 pass + ORT/Predictor over immutable snapshot
+        tier0_reasons: list[str] = []
         if is_self_tamper:
-            t0 = self._tier0.evaluate(
+            t0, tier0_reasons = self._tier0.evaluate_with_reasons(
                 intent=snap.intent,
                 private_spans=phase1_priv_list,
                 untrusted_spans=untrust_list,
@@ -1094,17 +1347,19 @@ class DiodeEngineServer:
             tier0_floor_max = 1.0
         else:
             if isinstance(self._predictor, OrtJevPredictor):
-                scores = self._predictor.evaluate_snapshot(snap, call)
-                t0_floor = self._predictor.tier0.evaluate(
+                t0_floor, tier0_reasons = self._predictor.tier0.evaluate_with_reasons(
                     intent=snap.intent,
                     private_spans=phase1_priv_list,
                     untrusted_spans=untrust_list,
                     call=call,
                 )
+                scores = self._predictor.evaluate_snapshot(
+                    snap, call, tier0_result=t0_floor
+                )
                 scores = _merge_floor_scores(scores, t0_floor)
                 tier0_floor_max = t0_floor.p_max
             elif self._predictor is self._tier0:
-                scores = self._tier0.evaluate(
+                scores, tier0_reasons = self._tier0.evaluate_with_reasons(
                     intent=snap.intent,
                     private_spans=phase1_priv_list,
                     untrusted_spans=untrust_list,
@@ -1112,13 +1367,13 @@ class DiodeEngineServer:
                 )
                 tier0_floor_max = scores.p_max
             else:
-                scores = self._predictor.evaluate(
+                t0_floor, tier0_reasons = self._tier0.evaluate_with_reasons(
                     intent=snap.intent,
                     private_spans=phase1_priv_list,
                     untrusted_spans=untrust_list,
                     call=call,
                 )
-                t0_floor = self._tier0.evaluate(
+                scores = self._predictor.evaluate(
                     intent=snap.intent,
                     private_spans=phase1_priv_list,
                     untrusted_spans=untrust_list,
@@ -1127,12 +1382,31 @@ class DiodeEngineServer:
                 scores = _merge_floor_scores(scores, t0_floor)
                 tier0_floor_max = t0_floor.p_max
 
-        # Phase 3 (re-acquire _state_lock): live rolling/tainted-write floors, trust_shape, and routing
+        # Phase 3 (re-acquire _state_lock): live concurrency re-check, rolling/tainted-write floors, trust_shape, and routing
         with self._state_lock:
             warn_min, critical_min = self._thresholds()
             latest_snap = ledger.snapshot()
             priv_list = list(latest_snap.private_spans)
             untrust_list = list(latest_snap.untrusted_spans)
+            latest_priv_ids = tuple(sp.span_id for sp in priv_list)
+            latest_untrust_ids = tuple(sp.span_id for sp in untrust_list)
+
+            if (
+                latest_priv_ids != phase1_priv_ids
+                or latest_untrust_ids != phase1_untrust_ids
+                or latest_snap.intent != phase1_intent
+            ):
+                t0_latest, latest_reasons = self._tier0.evaluate_with_reasons(
+                    intent=latest_snap.intent,
+                    private_spans=priv_list,
+                    untrusted_spans=untrust_list,
+                    call=call,
+                )
+                scores = _merge_floor_scores(scores, t0_latest)
+                tier0_floor_max = max(tier0_floor_max, t0_latest.p_max)
+                for rc in latest_reasons:
+                    if rc not in tier0_reasons:
+                        tier0_reasons.append(rc)
 
             if not is_self_tamper:
                 if writes_ext:
@@ -1143,9 +1417,16 @@ class DiodeEngineServer:
                         scores = _merge_floor_scores(scores, rolling_floor)
                         tier0_floor_max = max(tier0_floor_max, rolling_floor.p_max)
 
-                if not is_pure_local_rw and ledger.touches_tainted_local_write(call):
+                if not is_pure_local_rw:
                     write_floor = self._check_tainted_local_write_floor(
-                        ledger, priv_list, latest_snap.intent, call
+                        ledger,
+                        registry,
+                        priv_list,
+                        untrust_list,
+                        latest_snap.intent,
+                        call,
+                        call_cwd=call_cwd,
+                        writes_external=writes_ext,
                     )
                     if write_floor is not None:
                         scores = _merge_floor_scores(scores, write_floor)
@@ -1190,7 +1471,9 @@ class DiodeEngineServer:
                     in self._session_trusted_shapes
                 )
                 if is_admin_trusted or is_shim_trusted:
-                    self._commit_allowed_call_effects(registry, ledger, req_flags, call)
+                    self._commit_allowed_call_effects(
+                        registry, ledger, req_flags, call, call_cwd=call_cwd
+                    )
                     self._write_audit_decision(
                         decision="ALLOW_TRUSTED_SHAPE",
                         action="allow",
@@ -1212,12 +1495,15 @@ class DiodeEngineServer:
                         "tool": tool,
                         "workspace_key": ws_key,
                         "is_self_tamper": False,
+                        "reason_codes": list(tier0_reasons),
                         "trusted_shape": True,
                     }
 
             # Step 5: 3-Band Routing (SAFE / WARN / CRITICAL)
             if p_max < warn_min and not is_self_tamper:
-                self._commit_allowed_call_effects(registry, ledger, req_flags, call)
+                self._commit_allowed_call_effects(
+                    registry, ledger, req_flags, call, call_cwd=call_cwd
+                )
                 self._write_audit_decision(
                     decision="ALLOW",
                     action="allow",
@@ -1239,6 +1525,7 @@ class DiodeEngineServer:
                     "tool": tool,
                     "workspace_key": ws_key,
                     "is_self_tamper": False,
+                    "reason_codes": list(tier0_reasons),
                 }
 
             band_str = (
@@ -1346,16 +1633,20 @@ class DiodeEngineServer:
                 "is_self_tamper": is_self_tamper,
                 "is_critical_hijack": is_critical_hijack,
                 "has_high_secret": has_high_secret,
+                "writes_external": writes_ext,
                 "client_supports_popup": bool(client_supports_popup),
                 "popup_binding_sha256": norm_binding if client_supports_popup else None,
                 "reason": reason,
+                "reason_codes": list(tier0_reasons),
                 "args_preview": args_preview,
                 "approved_until": None,
                 "consumed": False,
                 "elicit_resolved_choice": None,
             }
+            inc_record["approval_hmac"] = self._compute_incident_approval_hmac(inc_record)
             self._incidents[incident_id] = inc_record
             self._incident_order.append(incident_id)
+            self._pending_incident_calls[incident_id] = call
             self._persist_incidents()
 
             response: dict[str, Any] = {
@@ -1369,6 +1660,7 @@ class DiodeEngineServer:
                 "workspace_key": ws_key,
                 "is_self_tamper": is_self_tamper,
                 "reason": reason,
+                "reason_codes": list(tier0_reasons),
                 "banner": banner,
                 "message": block_message,
             }
@@ -1397,13 +1689,14 @@ class DiodeEngineServer:
             raise ValueError("arguments must be a dict/mapping or None")
 
         with self._state_lock:
-            real_ws, ledger = self._get_ledger(workspace_root)
+            real_ws, call_cwd, ledger = self._get_ledger_and_cwd(workspace_root)
             registry = self._get_registry(real_ws)
             args_dict = dict(arguments or {})
 
             resp_flags = registry.classify_response(
                 server, tool, args_dict, output_text=output_text
             ) | CapabilityFlag(int(extra_flags))
+            req_flags = registry.classify_request(server, tool, args_dict)
 
             target_path = _extract_primary_path_arg(args_dict)
             if target_path:
@@ -1429,6 +1722,42 @@ class DiodeEngineServer:
                 written_body = _extract_write_body_text(args_dict)
                 if target_path and written_body:
                     ledger.record_local_write(target_path, written_body)
+
+            if registry._is_shell_call(norm_srv, norm_tool):
+                cmd_text = _extract_shell_command_text(args_dict)
+                if cmd_text:
+                    ledger.record_shell_side_effects(
+                        cmd_text,
+                        call_cwd=call_cwd,
+                        is_high_secret_path_fn=registry._private_sources.matches_high_secret_path,
+                    )
+
+            if norm_srv == "memory" and norm_tool in {
+                "create_entities",
+                "add_observations",
+                "create_relations",
+            }:
+                ledger.record_memory_write()
+
+            if bool(req_flags & CapabilityFlag.WRITES_EXTERNAL):
+                sha_key = (
+                    ledger.workspace_key,
+                    norm_srv,
+                    norm_tool,
+                    _canonical_args_sha256(args_dict),
+                )
+                prior_committed = self._committed_outbound_shas.get(sha_key, 0)
+                if prior_committed > 0:
+                    if prior_committed == 1:
+                        self._committed_outbound_shas.pop(sha_key, None)
+                    else:
+                        self._committed_outbound_shas[sha_key] = prior_committed - 1
+                else:
+                    out_call = CandidateCall(
+                        server=server, tool=tool, arguments=args_dict
+                    )
+                    for dest_key in _extract_destination_keys(out_call):
+                        ledger.record_outbound_call(dest_key, out_call)
 
             return {
                 "ok": True,
@@ -1596,20 +1925,35 @@ class DiodeEngineServer:
             inc["consumed"] = True
             inc["resolved_at"] = time.time()
             self._persist_incidents()
+            pending_call = self._pending_incident_calls.pop(incident_id, None)
 
-            if choice in ("allow_once", "trust_shape", "redact") and isinstance(
-                forwarded_arguments, dict
+            if choice in ("allow_once", "trust_shape") or (
+                choice == "redact" and isinstance(forwarded_arguments, dict)
             ):
-                ws_key = str(inc["workspace_key"])
-                ledger = self._ledgers.get(ws_key)
-                if ledger is not None:
-                    call = CandidateCall(
-                        server=str(inc["server"]),
-                        tool=str(inc["tool"]),
-                        arguments=forwarded_arguments,
-                    )
-                    dest_key = _extract_destination_key(call)
-                    ledger.record_outbound_call(dest_key, call)
+                out_args = (
+                    forwarded_arguments
+                    if isinstance(forwarded_arguments, dict)
+                    else (pending_call.arguments if pending_call is not None else None)
+                )
+                if out_args is not None:
+                    ws_key = str(inc["workspace_key"])
+                    ledger = self._ledgers.get(ws_key)
+                    if ledger is not None:
+                        call = CandidateCall(
+                            server=str(inc["server"]),
+                            tool=str(inc["tool"]),
+                            arguments=out_args,
+                        )
+                        is_ext = bool(inc.get("writes_external", False))
+                        if not is_ext:
+                            reg = self._get_registry(ledger.workspace_root)
+                            is_ext = bool(
+                                reg.classify_request(call.server, call.tool, call.arguments)
+                                & CapabilityFlag.WRITES_EXTERNAL
+                            )
+                        if is_ext or isinstance(forwarded_arguments, dict):
+                            for dest_key in _extract_destination_keys(call):
+                                ledger.record_outbound_call(dest_key, call)
 
             _append_jsonl_0600(
                 self._audit_path,
@@ -1676,6 +2020,7 @@ class DiodeEngineServer:
             expires_at = time.time() + eff_ttl
             mono_deadline = time.monotonic() + eff_ttl
             inc["approved_until"] = expires_at
+            inc["approval_hmac"] = self._compute_incident_approval_hmac(inc)
             self._approval_monotonic_deadlines[incident_id] = mono_deadline
             self._persist_incidents()
 
@@ -2484,590 +2829,6 @@ class DiodeEngineServer:
             executor.shutdown(wait=True, cancel_futures=False)
 
 
-class EngineClient:
-    """Synchronous (plus `.a*` async) IPC client for `DiodeEngineServer` (`hooks.py`, `cli.py`, tests)."""
-
-    def __init__(
-        self,
-        config: TransportConfig | None = None,
-        *,
-        auto_spawn: bool = True,
-        idle_timeout_s: float = float(DEFAULT_IDLE_TIMEOUT_SECONDS),
-        bundle_dir: Path | str | None = None,
-        timeout_s: float = 15.0,
-        shim_secret: str | None = None,
-        session_id: str | None = None,
-    ) -> None:
-        self.config: TransportConfig = config if config is not None else default_transport()
-        self.auto_spawn: bool = auto_spawn
-        self.idle_timeout_s: float = float(idle_timeout_s)
-        self.bundle_dir: Path | None = (
-            Path(bundle_dir).expanduser() if bundle_dir is not None else None
-        )
-        self.timeout_s: float = float(timeout_s)
-        self.session_id: str = session_id or f"sess_{secrets.token_hex(16)}"
-        self._shim_secret: str = (
-            shim_secret if shim_secret is not None else secrets.token_hex(32)
-        )
-        self._popup_binding_sha256: str = compute_popup_binding_sha256(self._shim_secret)
-
-    @property
-    def shim_secret(self) -> str:
-        """Per-shim in-memory secret used exclusively to authenticate `resolve_elicit`."""
-        return self._shim_secret
-
-    @property
-    def popup_binding_sha256(self) -> str:
-        """One-way `sha256(shim_secret)` hex digest passed in `evaluate_call` for popup binding."""
-        return self._popup_binding_sha256
-
-    def _call(
-        self,
-        method: str,
-        params: dict[str, Any],
-        *,
-        admin_secret: str | None = None,
-        auto_spawn: bool | None = None,
-    ) -> dict[str, Any]:
-        return send_rpc_sync(
-            self.config,
-            method,
-            params,
-            admin_secret=admin_secret,
-            auto_spawn=self.auto_spawn if auto_spawn is None else auto_spawn,
-            idle_timeout_s=self.idle_timeout_s,
-            bundle_dir=self.bundle_dir,
-            timeout_s=self.timeout_s,
-        )
-
-    async def _acall(
-        self,
-        method: str,
-        params: dict[str, Any],
-        *,
-        admin_secret: str | None = None,
-        auto_spawn: bool | None = None,
-    ) -> dict[str, Any]:
-        return await send_rpc_async(
-            self.config,
-            method,
-            params,
-            admin_secret=admin_secret,
-            auto_spawn=self.auto_spawn if auto_spawn is None else auto_spawn,
-            idle_timeout_s=self.idle_timeout_s,
-            bundle_dir=self.bundle_dir,
-            timeout_s=self.timeout_s,
-        )
-
-    def status(self) -> dict[str, Any]:
-        return self._call("status", {})
-
-    async def astatus(self) -> dict[str, Any]:
-        return await self._acall("status", {})
-
-    def evaluate_call(
-        self,
-        workspace_root: Path | str | None = None,
-        server: str = "",
-        tool: str = "",
-        arguments: dict[str, Any] | None = None,
-        *,
-        client_supports_popup: bool = False,
-        client_kind: Literal["mcp_shim", "ide_hook", "headless"] = "headless",
-        permission_mode: str | None = None,
-        config_path: Path | str | None = None,
-        popup_binding_sha256: str | None = _UNSET_SECRET,
-    ) -> dict[str, Any]:
-        del config_path  # Ignored: server loads policy exclusively from state_dir/config.toml
-        if popup_binding_sha256 is _UNSET_SECRET:
-            eff_binding = self._popup_binding_sha256 if client_supports_popup else None
-        else:
-            eff_binding = popup_binding_sha256
-        params: dict[str, Any] = {
-            "workspace_root": _normalize_client_workspace(workspace_root),
-            "server": server,
-            "tool": tool,
-            "arguments": dict(arguments or {}),
-            "client_supports_popup": bool(client_supports_popup),
-            "client_kind": client_kind,
-            "permission_mode": permission_mode,
-            "popup_binding_sha256": eff_binding,
-        }
-        return self._call("evaluate_call", params)
-
-    async def aevaluate_call(
-        self,
-        workspace_root: Path | str | None = None,
-        server: str = "",
-        tool: str = "",
-        arguments: dict[str, Any] | None = None,
-        *,
-        client_supports_popup: bool = False,
-        client_kind: Literal["mcp_shim", "ide_hook", "headless"] = "headless",
-        permission_mode: str | None = None,
-        config_path: Path | str | None = None,
-        popup_binding_sha256: str | None = _UNSET_SECRET,
-    ) -> dict[str, Any]:
-        del config_path
-        if popup_binding_sha256 is _UNSET_SECRET:
-            eff_binding = self._popup_binding_sha256 if client_supports_popup else None
-        else:
-            eff_binding = popup_binding_sha256
-        params: dict[str, Any] = {
-            "workspace_root": _normalize_client_workspace(workspace_root),
-            "server": server,
-            "tool": tool,
-            "arguments": dict(arguments or {}),
-            "client_supports_popup": bool(client_supports_popup),
-            "client_kind": client_kind,
-            "permission_mode": permission_mode,
-            "popup_binding_sha256": eff_binding,
-        }
-        return await self._acall("evaluate_call", params)
-
-    def record_output(
-        self,
-        workspace_root: Path | str | None,
-        server: str,
-        tool: str,
-        arguments: dict[str, Any] | None,
-        output_text: str,
-        *,
-        config_path: Path | str | None = None,
-        extra_flags: int | CapabilityFlag = CapabilityFlag.LOCAL_SAFE,
-    ) -> dict[str, Any]:
-        del config_path
-        params: dict[str, Any] = {
-            "workspace_root": _normalize_client_workspace(workspace_root),
-            "server": server,
-            "tool": tool,
-            "arguments": dict(arguments or {}),
-            "output_text": output_text,
-            "extra_flags": int(extra_flags),
-        }
-        return self._call("record_output", params)
-
-    async def arecord_output(
-        self,
-        workspace_root: Path | str | None,
-        server: str,
-        tool: str,
-        arguments: dict[str, Any] | None,
-        output_text: str,
-        *,
-        config_path: Path | str | None = None,
-        extra_flags: int | CapabilityFlag = CapabilityFlag.LOCAL_SAFE,
-    ) -> dict[str, Any]:
-        del config_path
-        params: dict[str, Any] = {
-            "workspace_root": _normalize_client_workspace(workspace_root),
-            "server": server,
-            "tool": tool,
-            "arguments": dict(arguments or {}),
-            "output_text": output_text,
-            "extra_flags": int(extra_flags),
-        }
-        return await self._acall("record_output", params)
-
-    def record_intent(
-        self,
-        workspace_root: Path | str | None,
-        intent: str | None,
-    ) -> dict[str, Any]:
-        return self._call(
-            "record_intent",
-            {
-                "workspace_root": _normalize_client_workspace(workspace_root),
-                "intent": intent,
-            },
-        )
-
-    async def arecord_intent(
-        self,
-        workspace_root: Path | str | None,
-        intent: str | None,
-    ) -> dict[str, Any]:
-        return await self._acall(
-            "record_intent",
-            {
-                "workspace_root": _normalize_client_workspace(workspace_root),
-                "intent": intent,
-            },
-        )
-
-    def record_local_write(
-        self,
-        workspace_root: Path | str | None,
-        target_path: str,
-        written_content: str,
-    ) -> dict[str, Any]:
-        return self._call(
-            "record_local_write",
-            {
-                "workspace_root": _normalize_client_workspace(workspace_root),
-                "target_path": target_path,
-                "written_content": written_content,
-            },
-        )
-
-    async def arecord_local_write(
-        self,
-        workspace_root: Path | str | None,
-        target_path: str,
-        written_content: str,
-    ) -> dict[str, Any]:
-        return await self._acall(
-            "record_local_write",
-            {
-                "workspace_root": _normalize_client_workspace(workspace_root),
-                "target_path": target_path,
-                "written_content": written_content,
-            },
-        )
-
-    def resolve_elicit(
-        self,
-        incident_id: str,
-        choice: Literal["allow_once", "redact", "block", "trust_shape"],
-        *,
-        shim_secret: str | None = _UNSET_SECRET,
-        forwarded_arguments: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        eff_secret = self._shim_secret if shim_secret is _UNSET_SECRET else shim_secret
-        return self._call(
-            "resolve_elicit",
-            {
-                "incident_id": incident_id,
-                "choice": choice,
-                "shim_secret": eff_secret,
-                "forwarded_arguments": forwarded_arguments,
-            },
-        )
-
-    async def aresolve_elicit(
-        self,
-        incident_id: str,
-        choice: Literal["allow_once", "redact", "block", "trust_shape"],
-        *,
-        shim_secret: str | None = _UNSET_SECRET,
-        forwarded_arguments: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        eff_secret = self._shim_secret if shim_secret is _UNSET_SECRET else shim_secret
-        return await self._acall(
-            "resolve_elicit",
-            {
-                "incident_id": incident_id,
-                "choice": choice,
-                "shim_secret": eff_secret,
-                "forwarded_arguments": forwarded_arguments,
-            },
-        )
-
-    def list_incidents(
-        self,
-        *,
-        limit: int = 50,
-        workspace_root: Path | str | None = None,
-        admin_secret: str | None = None,
-    ) -> list[dict[str, Any]]:
-        rpc_params: dict[str, Any] = {"limit": int(limit)}
-        if workspace_root is not None:
-            rpc_params["workspace_root"] = _normalize_client_workspace(workspace_root)
-        res = self._call(
-            "list_incidents",
-            rpc_params,
-            admin_secret=admin_secret,
-        )
-        items = res.get("incidents", [])
-        return list(items) if isinstance(items, list) else []
-
-    async def alist_incidents(
-        self,
-        *,
-        limit: int = 50,
-        workspace_root: Path | str | None = None,
-        admin_secret: str | None = None,
-    ) -> list[dict[str, Any]]:
-        rpc_params: dict[str, Any] = {"limit": int(limit)}
-        if workspace_root is not None:
-            rpc_params["workspace_root"] = _normalize_client_workspace(workspace_root)
-        res = await self._acall(
-            "list_incidents",
-            rpc_params,
-            admin_secret=admin_secret,
-        )
-        items = res.get("incidents", [])
-        return list(items) if isinstance(items, list) else []
-
-    def approve_incident(
-        self,
-        incident_id: str,
-        *,
-        ttl_seconds: float | None = None,
-        admin_secret: str | None = None,
-    ) -> dict[str, Any]:
-        rpc_params: dict[str, Any] = {"incident_id": incident_id}
-        if ttl_seconds is not None:
-            if isinstance(ttl_seconds, bool) or not isinstance(
-                ttl_seconds, (int, float)
-            ):
-                raise ValueError("ttl_seconds must be a positive finite number")
-            raw_ttl = float(ttl_seconds)
-            if not math.isfinite(raw_ttl) or raw_ttl <= 0.0:
-                raise ValueError("ttl_seconds must be a positive finite number")
-            rpc_params["ttl_seconds"] = raw_ttl
-        return self._call(
-            "approve_incident",
-            rpc_params,
-            admin_secret=admin_secret,
-        )
-
-    async def aapprove_incident(
-        self,
-        incident_id: str,
-        *,
-        ttl_seconds: float | None = None,
-        admin_secret: str | None = None,
-    ) -> dict[str, Any]:
-        rpc_params: dict[str, Any] = {"incident_id": incident_id}
-        if ttl_seconds is not None:
-            if isinstance(ttl_seconds, bool) or not isinstance(
-                ttl_seconds, (int, float)
-            ):
-                raise ValueError("ttl_seconds must be a positive finite number")
-            raw_ttl = float(ttl_seconds)
-            if not math.isfinite(raw_ttl) or raw_ttl <= 0.0:
-                raise ValueError("ttl_seconds must be a positive finite number")
-            rpc_params["ttl_seconds"] = raw_ttl
-        return await self._acall(
-            "approve_incident",
-            rpc_params,
-            admin_secret=admin_secret,
-        )
-
-    # Alias for Ruling R4 backward-compat naming (`approve_allow_token`)
-    approve_allow_token = approve_incident
-    aapprove_allow_token = aapprove_incident
-
-    def trust_tool_shape(
-        self,
-        workspace_root: Path | str | None,
-        server: str,
-        tool: str,
-        arg_keys: Iterable[str],
-        *,
-        admin_secret: str | None = None,
-    ) -> dict[str, Any]:
-        return self._call(
-            "trust_tool_shape",
-            {
-                "workspace_root": _normalize_client_workspace(workspace_root),
-                "server": server,
-                "tool": tool,
-                "arg_keys": [str(k) for k in arg_keys],
-            },
-            admin_secret=admin_secret,
-        )
-
-    async def atrust_tool_shape(
-        self,
-        workspace_root: Path | str | None,
-        server: str,
-        tool: str,
-        arg_keys: Iterable[str],
-        *,
-        admin_secret: str | None = None,
-    ) -> dict[str, Any]:
-        return await self._acall(
-            "trust_tool_shape",
-            {
-                "workspace_root": _normalize_client_workspace(workspace_root),
-                "server": server,
-                "tool": tool,
-                "arg_keys": [str(k) for k in arg_keys],
-            },
-            admin_secret=admin_secret,
-        )
-
-    def shutdown(self, *, admin_secret: str | None = None) -> dict[str, Any]:
-        return self._call("shutdown", {}, admin_secret=admin_secret, auto_spawn=False)
-
-    async def ashutdown(self, *, admin_secret: str | None = None) -> dict[str, Any]:
-        return await self._acall(
-            "shutdown", {}, admin_secret=admin_secret, auto_spawn=False
-        )
-
-
-class AsyncEngineClient:
-    """First-class async IPC client for `shim.py` (`await client.evaluate_call(...)`, `await client.record_output(...)`)."""
-
-    def __init__(
-        self,
-        config: TransportConfig | None = None,
-        *,
-        auto_spawn: bool = True,
-        idle_timeout_s: float = float(DEFAULT_IDLE_TIMEOUT_SECONDS),
-        bundle_dir: Path | str | None = None,
-        timeout_s: float = 15.0,
-        shim_secret: str | None = None,
-        session_id: str | None = None,
-    ) -> None:
-        self._sync = EngineClient(
-            config,
-            auto_spawn=auto_spawn,
-            idle_timeout_s=idle_timeout_s,
-            bundle_dir=bundle_dir,
-            timeout_s=timeout_s,
-            shim_secret=shim_secret,
-            session_id=session_id,
-        )
-
-    @property
-    def config(self) -> TransportConfig:
-        return self._sync.config
-
-    @property
-    def session_id(self) -> str:
-        return self._sync.session_id
-
-    @property
-    def shim_secret(self) -> str:
-        return self._sync.shim_secret
-
-    @property
-    def popup_binding_sha256(self) -> str:
-        return self._sync.popup_binding_sha256
-
-    async def status(self) -> dict[str, Any]:
-        return await self._sync.astatus()
-
-    async def evaluate_call(
-        self,
-        workspace_root: Path | str | None = None,
-        server: str = "",
-        tool: str = "",
-        arguments: dict[str, Any] | None = None,
-        *,
-        client_supports_popup: bool = False,
-        client_kind: Literal["mcp_shim", "ide_hook", "headless"] = "headless",
-        permission_mode: str | None = None,
-        config_path: Path | str | None = None,
-        popup_binding_sha256: str | None = _UNSET_SECRET,
-    ) -> dict[str, Any]:
-        return await self._sync.aevaluate_call(
-            workspace_root=workspace_root,
-            server=server,
-            tool=tool,
-            arguments=arguments,
-            client_supports_popup=client_supports_popup,
-            client_kind=client_kind,
-            permission_mode=permission_mode,
-            config_path=config_path,
-            popup_binding_sha256=popup_binding_sha256,
-        )
-
-    async def record_output(
-        self,
-        workspace_root: Path | str | None,
-        server: str,
-        tool: str,
-        arguments: dict[str, Any] | None,
-        output_text: str,
-        *,
-        config_path: Path | str | None = None,
-        extra_flags: int | CapabilityFlag = CapabilityFlag.LOCAL_SAFE,
-    ) -> dict[str, Any]:
-        return await self._sync.arecord_output(
-            workspace_root,
-            server,
-            tool,
-            arguments,
-            output_text,
-            config_path=config_path,
-            extra_flags=extra_flags,
-        )
-
-    async def record_intent(
-        self,
-        workspace_root: Path | str | None,
-        intent: str | None,
-    ) -> dict[str, Any]:
-        return await self._sync.arecord_intent(workspace_root, intent)
-
-    async def record_local_write(
-        self,
-        workspace_root: Path | str | None,
-        target_path: str,
-        written_content: str,
-    ) -> dict[str, Any]:
-        return await self._sync.arecord_local_write(
-            workspace_root, target_path, written_content
-        )
-
-    async def resolve_elicit(
-        self,
-        incident_id: str,
-        choice: Literal["allow_once", "redact", "block", "trust_shape"],
-        *,
-        shim_secret: str | None = _UNSET_SECRET,
-        forwarded_arguments: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        return await self._sync.aresolve_elicit(
-            incident_id,
-            choice,
-            shim_secret=shim_secret,
-            forwarded_arguments=forwarded_arguments,
-        )
-
-    async def list_incidents(
-        self,
-        *,
-        limit: int = 50,
-        workspace_root: Path | str | None = None,
-        admin_secret: str | None = None,
-    ) -> list[dict[str, Any]]:
-        return await self._sync.alist_incidents(
-            limit=limit,
-            workspace_root=workspace_root,
-            admin_secret=admin_secret,
-        )
-
-    async def approve_incident(
-        self,
-        incident_id: str,
-        *,
-        ttl_seconds: float | None = None,
-        admin_secret: str | None = None,
-    ) -> dict[str, Any]:
-        return await self._sync.aapprove_incident(
-            incident_id,
-            ttl_seconds=ttl_seconds,
-            admin_secret=admin_secret,
-        )
-
-    approve_allow_token = approve_incident
-
-    async def trust_tool_shape(
-        self,
-        workspace_root: Path | str | None,
-        server: str,
-        tool: str,
-        arg_keys: Iterable[str],
-        *,
-        admin_secret: str | None = None,
-    ) -> dict[str, Any]:
-        return await self._sync.atrust_tool_shape(
-            workspace_root,
-            server,
-            tool,
-            arg_keys,
-            admin_secret=admin_secret,
-        )
-
-    async def shutdown(self, *, admin_secret: str | None = None) -> dict[str, Any]:
-        return await self._sync.ashutdown(admin_secret=admin_secret)
-
-
 def _main_daemon_cli(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="DiodeMCP background workspace engine")
     parser.add_argument("--state-dir", type=Path, default=None)
@@ -3079,7 +2840,7 @@ def _main_daemon_cli(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--idle-timeout",
         type=float,
-        default=float(DEFAULT_IDLE_TIMEOUT_SECONDS),
+        default=DEFAULT_IDLE_TIMEOUT,
     )
     parser.add_argument("--bundle-dir", type=Path, default=None)
 

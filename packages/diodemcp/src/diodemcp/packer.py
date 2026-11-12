@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
+import hashlib
 import json
 import re
 from typing import TYPE_CHECKING, Any
@@ -22,6 +23,7 @@ from diodemcp.constants import (
     TOKEN_ROLE_STATE,
 )
 from diodemcp.predictor import _expand_arg_views_detailed
+from diodemcp.registry import canonicalize_call_head
 from diodemcp.types import CandidateCall, CapabilityFlag, TaintSpan
 
 if TYPE_CHECKING:
@@ -235,6 +237,26 @@ def _extract_ngrams_and_words(texts: list[str], max_chars: int = 8192) -> tuple[
     return ngrams, words
 
 
+_SPAN_OVERLAP_CACHE: OrderedDict[tuple[str, str], tuple[frozenset[str], frozenset[str]]] = OrderedDict()
+_SPAN_OVERLAP_CACHE_MAX = 512
+
+
+def _get_span_ngrams_and_words(span: TaintSpan) -> tuple[frozenset[str], frozenset[str]]:
+    sample = f"{span.source_label}\n{span.text[:8192]}".lower()
+    sample_hash = hashlib.sha256(sample.encode("utf-8", errors="replace")).hexdigest()
+    key = (span.span_id, sample_hash)
+    cached = _SPAN_OVERLAP_CACHE.get(key)
+    if cached is not None:
+        _SPAN_OVERLAP_CACHE.move_to_end(key)
+        return cached
+    span_ngrams, span_words = _extract_ngrams_and_words([sample], max_chars=8192)
+    val = (frozenset(span_ngrams), frozenset(span_words))
+    _SPAN_OVERLAP_CACHE[key] = val
+    while len(_SPAN_OVERLAP_CACHE) > _SPAN_OVERLAP_CACHE_MAX:
+        _SPAN_OVERLAP_CACHE.popitem(last=False)
+    return val
+
+
 def _score_span_overlap(
     span: TaintSpan,
     call_ngrams: set[str],
@@ -242,8 +264,7 @@ def _score_span_overlap(
 ) -> float:
     if not call_ngrams and not call_words:
         return 0.0
-    sample = f"{span.source_label}\n{span.text[:8192]}".lower()
-    span_ngrams, span_words = _extract_ngrams_and_words([sample], max_chars=8192)
+    span_ngrams, span_words = _get_span_ngrams_and_words(span)
     word_hits = len(span_words & call_words)
     ngram_hits = len(span_ngrams & call_ngrams)
     denom = max(1, min(len(call_ngrams), 256))
@@ -421,7 +442,8 @@ class JevWindowPacker:
             was_truncated = was_truncated or cut_intent
             avail -= len(intent_ids)
 
-        raw_call_ids = self._encode_safe(f"{call.server}.{call.tool}")
+        canon_srv, canon_tool = canonicalize_call_head(call.server, call.tool)
+        raw_call_ids = self._encode_safe(f"{canon_srv}.{canon_tool}")
         call_cap = min(avail, max(4, avail // 8))
         call_head_ids, cut_call = _middle_elide_ids(raw_call_ids, call_cap)
         was_truncated = was_truncated or cut_call

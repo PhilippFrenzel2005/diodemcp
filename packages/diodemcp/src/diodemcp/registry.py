@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from dataclasses import dataclass, field
+import fnmatch
+from importlib import resources
 import os
+from pathlib import Path
 import posixpath
 import re
 import tomllib
-import urllib.parse
-from dataclasses import dataclass, field
-from importlib import resources
-from pathlib import Path
 from typing import Any
+import urllib.parse
 
 from diodemcp.constants import DEFAULT_STATE_DIR
 from diodemcp.types import CapabilityFlag
@@ -248,6 +250,96 @@ _SQL_READ_RE = re.compile(
     re.IGNORECASE,
 )
 
+_DIODEMCP_PATH_COMPONENT_RE = re.compile(
+    r"(?:^|[~/\\\"'\s;|&><=():])\.diodemcp(?:[/\\\"'\s;|&><=()._-]|$)",
+    re.IGNORECASE,
+)
+
+# Escalate-only dynamic metadata heuristics for unknown/unlisted tools.
+_CAMEL_BOUNDARY_RE = re.compile(r"([a-z0-9])([A-Z])")
+_TOOL_VERBS_EXTERNAL: frozenset[str] = frozenset(
+    {
+        "send",
+        "post",
+        "share",
+        "upload",
+        "publish",
+        "forward",
+        "transfer",
+        "pay",
+        "webhook",
+        "notify",
+        "dispatch",
+        "submit",
+        "broadcast",
+        "reply",
+    }
+)
+_TOOL_VERBS_MUTATE: frozenset[str] = frozenset(
+    {
+        "create",
+        "delete",
+        "remove",
+        "drop",
+        "transfer",
+        "pay",
+        "exec",
+        "execute",
+        "run",
+        "write",
+        "update",
+        "modify",
+        "alter",
+        "patch",
+        "grant",
+        "revoke",
+        "reset",
+    }
+)
+_KEY_HINTS_EXTERNAL: frozenset[str] = frozenset(
+    {
+        "to",
+        "cc",
+        "bcc",
+        "recipient",
+        "recipients",
+        "email",
+        "url",
+        "uri",
+        "webhook",
+        "iban",
+        "amount",
+        "channel",
+        "body",
+        "message",
+        "endpoint",
+        "href",
+        "target_url",
+    }
+)
+_KEY_HINTS_MUTATE: frozenset[str] = frozenset(
+    {
+        "command",
+        "cmd",
+        "sql",
+        "iban",
+        "amount",
+    }
+)
+
+_CANONICAL_IDE_TOOL_CASING: dict[str, str] = {
+    "bash": "Bash",
+    "bashoutput": "BashOutput",
+    "read": "Read",
+    "write": "Write",
+    "edit": "Edit",
+    "multiedit": "MultiEdit",
+    "glob": "Glob",
+    "grep": "Grep",
+    "notebookread": "NotebookRead",
+    "notebookedit": "NotebookEdit",
+}
+
 # Opus I1 / T2 / T6: Shell outbound network & destructive/persistence command classifiers.
 _SHELL_OUTBOUND_RE = re.compile(
     r"(?:"
@@ -255,12 +347,16 @@ _SHELL_OUTBOUND_RE = re.compile(
     r"|\bgh\s+(?:issue|pr|gist|release|api|repo)\b"
     r"|\bglab\s+(?:issue|mr|snippet|release|api)\b"
     r"|\bgit\s+(?:push|send-email|request-pull)\b"
+    r"|\bgit\s+(?:clone|fetch|ls-remote)\b[^\n;|&]*https?://(?:[^/\s:@]+:[^/\s@]*@|[^\s?#]+\?[^\s]+)"
     r"|\b(?:npm|pnpm|yarn|poetry|uv|cargo)\s+publish\b"
     r"|\bgem\s+push\b"
     r"|\bdocker\s+push\b"
-    r"|\b(?:dig|nslookup|host)\s+\S+"
+    r"|(?:^|[\s;|&(])(?:dig|nslookup|host)\s+(?!(?:localhost|127\.0\.0\.1)\b)\S+"
     r"|/dev/(?:tcp|udp)/"
     r"|\b(?:Invoke-WebRequest|Invoke-RestMethod)\b"
+    r"|\b(?:iwr|irm)\s+\S+"
+    r"|\bpython[0-9.]*\b[^\n;|&]{0,80}\s-c\b[^\n;|&]*\b(?:urllib|http\.client|requests|socket|httpx|aiohttp)\b"
+    r"|\bnode\b[^\n;|&]{0,80}\s(?:-e|--eval)\b[^\n;|&]*\b(?:fetch|https?|net|axios|undici)\b"
     r")",
     re.IGNORECASE,
 )
@@ -595,9 +691,179 @@ def _normalize_server_and_tool(server: str, tool: str) -> tuple[str, str]:
     return srv, tl
 
 
+def canonicalize_call_head(server: str, tool: str) -> tuple[str, str]:
+    """Canonicalize call head to match training format (e.g. `ide.Bash`, `github.create_issue`)."""
+    raw_tl = tool.strip()
+    norm_srv, norm_tl = _normalize_server_and_tool(server, tool)
+    if norm_srv in _GENERIC_HOST_SERVERS:
+        canon_srv = "ide"
+        if norm_tl in _CANONICAL_IDE_TOOL_CASING:
+            canon_tl = _CANONICAL_IDE_TOOL_CASING[norm_tl]
+        else:
+            canon_tl = raw_tl.split(".", 1)[1] if "." in raw_tl else (raw_tl or norm_tl)
+        return canon_srv, canon_tl
+    return norm_srv, norm_tl
+
+
 def _expand_shell_env_vars(text: str) -> str:
     home_posix = Path.home().as_posix()
     return _SHELL_HOME_ENV_RE.sub(lambda _m: home_posix, text)
+
+
+def expand_self_tamper_variants(text: str) -> list[str]:
+    """Return unique candidate views with env expansion, URL decode, quote & backslash stripping."""
+    expanded = _expand_shell_env_vars(text)
+    unquoted = urllib.parse.unquote(expanded)
+    out: list[str] = []
+    seen: set[str] = set()
+    for base in (text, expanded, unquoted):
+        no_quotes = base.replace("'", "").replace('"', "")
+        no_backslash = re.sub(r"\\(.)", r"\1", no_quotes)
+        for variant in (base, no_quotes, no_backslash):
+            if variant and variant not in seen:
+                seen.add(variant)
+                out.append(variant)
+    return out
+
+
+def has_diodemcp_path_reference(text: str) -> bool:
+    """Return True if text contains a `.diodemcp` path component, file, or redirection target."""
+    for variant in expand_self_tamper_variants(text):
+        if _DIODEMCP_PATH_COMPONENT_RE.search(variant) is not None:
+            return True
+    return False
+
+
+_WILDCARD_CHARS_RE = re.compile(r"[*?\[\]]")
+_PROTECTED_DIR_MARKERS: frozenset[str] = frozenset({".diodemcp", ".claude", ".cursor"})
+
+
+def _glob_segment_is_specific(seg: str) -> bool:
+    stripped = _WILDCARD_CHARS_RE.sub("", seg)
+    alnum_count = sum(1 for ch in stripped if ch.isalnum())
+    return alnum_count >= 2
+
+
+def glob_token_matches_protected(
+    raw_token: str,
+    protected_targets: Sequence[str],
+    workspace_root: Path | None,
+) -> bool:
+    """Segment-aware glob check avoiding `/` crossing and overly broad `*` false positives."""
+    if not any(ch in raw_token for ch in "*?["):
+        return False
+    norm_glob = _lexical_normalize_target_path(raw_token, workspace_root, casefold=True)
+    if not norm_glob:
+        return False
+    glob_segs = [s for s in norm_glob.split("/") if s]
+    if not glob_segs:
+        return False
+
+    has_specific_wildcard = any(
+        _glob_segment_is_specific(s)
+        for s in glob_segs
+        if any(ch in s for ch in "*?[")
+    )
+    has_protected_dir = any(s in _PROTECTED_DIR_MARKERS for s in glob_segs)
+    if not has_specific_wildcard and not has_protected_dir:
+        return False
+
+    if "**" in glob_segs:
+        rx = _compile_single_folded_glob(norm_glob)
+        return any(rx.search(target) is not None for target in protected_targets)
+
+    for target in protected_targets:
+        t_segs = [s for s in target.split("/") if s]
+        if len(glob_segs) != len(t_segs):
+            continue
+        if all(fnmatch.fnmatchcase(t_s, g_s) for g_s, t_s in zip(glob_segs, t_segs)):
+            return True
+    return False
+
+
+def _collect_all_arg_and_schema_keys(
+    args: dict[str, Any] | None,
+    input_schema: dict[str, Any] | None = None,
+) -> set[str]:
+    keys: set[str] = set()
+
+    def _visit_args(obj: Any) -> None:
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                if isinstance(k, str) and k:
+                    keys.add(k.strip().lower())
+                _visit_args(v)
+        elif isinstance(obj, (list, tuple)):
+            for item in obj:
+                _visit_args(item)
+
+    def _visit_schema(schema: Any) -> None:
+        if not isinstance(schema, dict):
+            return
+        props = schema.get("properties")
+        if isinstance(props, dict):
+            for k, v in props.items():
+                if isinstance(k, str) and k:
+                    keys.add(k.strip().lower())
+                _visit_schema(v)
+        items = schema.get("items")
+        if isinstance(items, dict):
+            _visit_schema(items)
+
+    if args:
+        _visit_args(args)
+    if input_schema:
+        _visit_schema(input_schema)
+    return keys
+
+
+def classify_tool_metadata(
+    tool: str,
+    args: dict[str, Any] | None = None,
+    *,
+    annotations: dict[str, Any] | None = None,
+    input_schema: dict[str, Any] | None = None,
+) -> CapabilityFlag:
+    """Escalate-only heuristic capability classification from tool verbs, arg/schema keys, and MCP annotations."""
+    flags = CapabilityFlag.LOCAL_SAFE
+
+    eff_annotations = annotations
+    if eff_annotations is None and isinstance(args, dict):
+        raw_ann = args.get("_mcp_annotations")
+        if isinstance(raw_ann, dict):
+            eff_annotations = raw_ann
+
+    if isinstance(eff_annotations, dict):
+        if eff_annotations.get("openWorldHint") is True:
+            flags |= CapabilityFlag.WRITES_EXTERNAL
+        if eff_annotations.get("destructiveHint") is True:
+            flags |= CapabilityFlag.MUTATES_SENSITIVE
+
+    split_tool = _CAMEL_BOUNDARY_RE.sub(r"\1 \2", tool or "")
+    verb_tokens = [tok for tok in re.split(r"[^a-zA-Z0-9]+", split_tool.lower()) if tok]
+    for tok in verb_tokens:
+        if tok in _TOOL_VERBS_EXTERNAL:
+            flags |= CapabilityFlag.WRITES_EXTERNAL
+        if tok in _TOOL_VERBS_MUTATE:
+            flags |= CapabilityFlag.MUTATES_SENSITIVE
+
+    arg_keys = _collect_all_arg_and_schema_keys(args, input_schema)
+    ext_hits = arg_keys & _KEY_HINTS_EXTERNAL
+    if (
+        "uri" in ext_hits
+        and verb_tokens
+        and verb_tokens[0] in {"read", "list", "get", "view", "inspect", "show"}
+        and not any(tok in (_TOOL_VERBS_EXTERNAL | _TOOL_VERBS_MUTATE) for tok in verb_tokens)
+    ):
+        uri_val = str((args or {}).get("uri") or "").strip().lower()
+        if not uri_val.startswith(("http://", "https://", "ftp://", "ws://", "wss://")):
+            ext_hits = ext_hits - {"uri"}
+    if ext_hits:
+        flags |= CapabilityFlag.WRITES_EXTERNAL
+    if arg_keys & _KEY_HINTS_MUTATE:
+        flags |= CapabilityFlag.MUTATES_SENSITIVE
+
+    return flags
 
 
 def _collect_strings_for_self_tamper(
@@ -809,6 +1075,22 @@ def _is_editor_view_mode(norm_tool: str, args: dict[str, Any] | None) -> bool:
     return False
 
 
+_DEFAULT_PROBE_TARGET_PATTERNS: tuple[str, ...] = (
+    "~/.diodemcp/incidents.json",
+    "~/.diodemcp/config.toml",
+    "~/.diodemcp/active_bundle.json",
+    "~/.diodemcp/audit.jsonl",
+    "~/.diodemcp/admin.secret",
+    "~/.diodemcp/engine.sock",
+    "~/.diodemcp/engine.addr",
+    "~/.diodemcp/daemon.lock",
+    "~/.claude/settings.json",
+    "~/.claude.json",
+    "~/.cursor/mcp.json",
+    "~/.mcp.json",
+)
+
+
 class CapabilityRegistry:
     """Strict-Everywhere bitflag capability classifier across T1-T7 threat surfaces."""
 
@@ -829,6 +1111,7 @@ class CapabilityRegistry:
         shell_tools: set[str],
         user_private_sources: _DomainMatcher,
         user_sensitive_mutations: _DomainMatcher,
+        local_safe: _DomainMatcher | None = None,
     ) -> None:
         self.workspace_root = workspace_root
         self._self_protection = self_protection
@@ -844,6 +1127,10 @@ class CapabilityRegistry:
         self._shell_tools = shell_tools
         self._user_private_sources = user_private_sources
         self._user_sensitive_mutations = user_sensitive_mutations
+        self._local_safe = local_safe if local_safe is not None else _DomainMatcher()
+        self._protected_probe_targets: tuple[str, ...] = tuple(
+            self._canonical_folded_paths(list(_DEFAULT_PROBE_TARGET_PATTERNS))
+        )
 
     @classmethod
     def from_default_and_user_config(
@@ -910,6 +1197,10 @@ class CapabilityRegistry:
         shell_tools = {
             t.strip().lower() for t in shell_section.get("tools", []) if isinstance(t, str)
         }
+        local_safe = _DomainMatcher()
+        local_safe.extend_from_mapping(
+            default_data.get("local_safe", {}), section_name="local_safe"
+        )
 
         resolved_config = (
             config_path
@@ -971,6 +1262,7 @@ class CapabilityRegistry:
             shell_tools=shell_tools,
             user_private_sources=user_private_sources,
             user_sensitive_mutations=user_sensitive_mutations,
+            local_safe=local_safe,
         )
 
     def _canonical_folded_paths(self, raw_paths: list[str]) -> list[str]:
@@ -1015,6 +1307,59 @@ class CapabilityRegistry:
             return False
         return norm_tool in _LOCAL_FILE_WRITE_TOOLS
 
+    def _is_explicitly_registered_tool(
+        self,
+        norm_server: str,
+        norm_tool: str,
+        args: dict[str, Any] | None = None,
+    ) -> bool:
+        return (
+            self._local_safe.matches_server_or_tool(norm_server, norm_tool)
+            or self._is_shell_call(norm_server, norm_tool)
+            or self._is_file_read_call(norm_server, norm_tool, args)
+            or self._is_file_write_call(norm_server, norm_tool, args)
+            or norm_server in self._db_servers
+            or self._external_sinks.matches_server_or_tool(norm_server, norm_tool)
+            or self._sensitive_mutations.matches_server_or_tool(norm_server, norm_tool)
+            or self._dual_direction.matches_server_or_tool(norm_server, norm_tool)
+            or self._untrusted_sources.matches_server_or_tool(norm_server, norm_tool)
+            or self._mixed_trust_sources.matches_server_or_tool(norm_server, norm_tool)
+            or f"{norm_server}.{norm_tool}" in self._private_sources.qualified_tools
+            or norm_tool in self._private_sources.standalone_tools
+        )
+
+    def is_known_safe_tool(
+        self,
+        server: str,
+        tool: str,
+        args: dict[str, Any] | None = None,
+        *,
+        annotations: dict[str, Any] | None = None,
+        input_schema: dict[str, Any] | None = None,
+    ) -> bool:
+        """Return True ONLY for explicitly registered local/safe tools whose request is `LOCAL_SAFE`."""
+        norm_server, norm_tool = _normalize_server_and_tool(server, tool)
+        req_flags = self.classify_request(
+            server,
+            tool,
+            args or {},
+            annotations=annotations,
+            input_schema=input_schema,
+        )
+        if req_flags != CapabilityFlag.LOCAL_SAFE:
+            return False
+        if self._local_safe.matches_server_or_tool(norm_server, norm_tool):
+            return True
+        if self._is_file_read_call(norm_server, norm_tool, args):
+            return True
+        if self._is_file_write_call(norm_server, norm_tool, args):
+            return True
+        if norm_server in self._db_servers and (
+            norm_tool in self._db_read_tools or norm_tool in self._db_mutating_tools
+        ):
+            return True
+        return False
+
     def is_unconditional_critical_self_tamper(
         self,
         server: str,
@@ -1024,6 +1369,13 @@ class CapabilityRegistry:
         """Return True when a call reads, mutates, or kills DiodeMCP or IDE hook/MCP configs (`C4`)."""
         norm_server, norm_tool = _normalize_server_and_tool(server, tool)
         raw_paths = _extract_path_values(args)
+        for raw_p in raw_paths:
+            if has_diodemcp_path_reference(raw_p):
+                return True
+            if glob_token_matches_protected(
+                raw_p, self._protected_probe_targets, self.workspace_root
+            ):
+                return True
         for folded in self._canonical_folded_paths(raw_paths):
             if self._self_protection.matches_path(folded):
                 return True
@@ -1035,8 +1387,7 @@ class CapabilityRegistry:
             skip_file_body_keys=self._is_file_write_call(norm_server, norm_tool, args),
         )
         for text in all_strings:
-            expanded = _expand_shell_env_vars(text)
-            for candidate in (text, expanded, urllib.parse.unquote(expanded)):
+            for candidate in expand_self_tamper_variants(text):
                 if _SELF_TAMPER_CLI_RE.search(candidate) is not None:
                     return True
                 for line in candidate.splitlines():
@@ -1044,6 +1395,18 @@ class CapabilityRegistry:
                         return True
                 if _SELF_TAMPER_INLINE_RE.search(candidate) is not None:
                     return True
+                if _DIODEMCP_PATH_COMPONENT_RE.search(candidate) is not None:
+                    return True
+                for raw_tok in _extract_shell_path_candidates(candidate):
+                    if glob_token_matches_protected(
+                        raw_tok, self._protected_probe_targets, self.workspace_root
+                    ):
+                        return True
+                for split_tok in _SHELL_TOKEN_SPLIT_RE.split(candidate):
+                    if split_tok and glob_token_matches_protected(
+                        split_tok, self._protected_probe_targets, self.workspace_root
+                    ):
+                        return True
                 for folded_tok in self._canonical_folded_paths(
                     _extract_shell_path_candidates(candidate)
                 ):
@@ -1056,6 +1419,9 @@ class CapabilityRegistry:
         server: str,
         tool: str,
         args: dict[str, Any],
+        *,
+        annotations: dict[str, Any] | None = None,
+        input_schema: dict[str, Any] | None = None,
     ) -> CapabilityFlag:
         """Classify pre-execution sink and sensitive-mutation capabilities for a proposed call."""
         norm_server, norm_tool = _normalize_server_and_tool(server, tool)
@@ -1066,12 +1432,27 @@ class CapabilityRegistry:
 
         folded_paths = self._canonical_folded_paths(_extract_path_values(args))
 
+        is_mcp_protocol_read = norm_tool in {
+            "read_resource",
+            "list_resources",
+            "list_prompts",
+            "get_prompt",
+        } and not any(
+            str(v).strip().lower().startswith(("http://", "https://", "ftp://", "ws://", "wss://"))
+            for v in (args.get("uri"), args.get("url"))
+            if v is not None
+        )
+
         # Dual-direction web/search/browser tools send URL/query externally on request.
-        if self._dual_direction.matches_server_or_tool(norm_server, norm_tool):
+        if not is_mcp_protocol_read and self._dual_direction.matches_server_or_tool(
+            norm_server, norm_tool
+        ):
             flags |= CapabilityFlag.WRITES_EXTERNAL
 
         # T2 / T7: Explicit external sinks (zero exemption for git remote origin).
-        if self._external_sinks.matches_server_or_tool(norm_server, norm_tool):
+        if not is_mcp_protocol_read and self._external_sinks.matches_server_or_tool(
+            norm_server, norm_tool
+        ):
             flags |= CapabilityFlag.WRITES_EXTERNAL
 
         # T7 / T6: Explicit sensitive mutation servers/tools.
@@ -1131,6 +1512,25 @@ class CapabilityRegistry:
                     flags |= CapabilityFlag.WRITES_EXTERNAL
                 if not is_file_read and self._user_sensitive_mutations.matches_path(fp):
                     flags |= CapabilityFlag.MUTATES_SENSITIVE
+
+        # Escalate-only dynamic metadata classification:
+        # - MCP annotations (`openWorldHint`, `destructiveHint`) always escalate.
+        # - Unknown/unlisted tools also escalate from verb/arg-key/schema heuristics.
+        if not self._is_explicitly_registered_tool(norm_server, norm_tool, args):
+            flags |= classify_tool_metadata(
+                norm_tool,
+                args,
+                annotations=annotations,
+                input_schema=input_schema,
+            )
+        else:
+            flags |= classify_tool_metadata(
+                "",
+                None,
+                annotations=annotations if annotations is not None else (
+                    args.get("_mcp_annotations") if isinstance(args, dict) else None
+                ),
+            )
 
         return flags
 
@@ -1218,5 +1618,19 @@ class CapabilityRegistry:
         # T1: Dynamic output_text secret header / prefix inspection upgrades any tool response.
         if output_text and _OUTPUT_SECRET_RE.search(output_text) is not None:
             flags |= CapabilityFlag.READS_PRIVATE | CapabilityFlag.HIGH_SECRET
+
+        # Unknown / unlisted MCP server/tool responses default to READS_UNTRUSTED
+        # while explicitly safe/known local-write/sink/db/sensitive tools stay clean.
+        if flags == CapabilityFlag.LOCAL_SAFE:
+            is_known_clean = (
+                self._local_safe.matches_server_or_tool(norm_server, norm_tool)
+                or self._is_file_write_call(norm_server, norm_tool, args)
+                or is_outbound_sink_tool
+                or (norm_server in self._db_servers)
+                or self._sensitive_mutations.matches_server_or_tool(norm_server, norm_tool)
+                or self._is_explicitly_registered_tool(norm_server, norm_tool, args)
+            )
+            if not is_known_clean:
+                flags |= CapabilityFlag.READS_UNTRUSTED
 
         return flags

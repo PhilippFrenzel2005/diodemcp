@@ -595,6 +595,9 @@ mutating_tools = [
 [shell]
 tools = [
     "bash",
+    "bashoutput",
+    "bash_output",
+    "command_status",
     "sh",
     "zsh",
     "shell",
@@ -604,4 +607,17 @@ tools = [
     "terminal",
     "cmd",
     "powershell",
+]
+
+[local_safe]
+tools = [
+    "todoread",
+    "todowrite",
+    "todo_read",
+    "todo_write",
+    "task_boundary",
+    "notify_user",
+    "read_lints",
+    "get_diagnostics",
+    "lsp_diagnostics",
 ]

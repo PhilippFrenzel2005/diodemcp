@@ -18,16 +18,39 @@ from diodemcp.predictor import (
     _HEX_CANDIDATE_RE,
     _HIGH_ENTROPY_TOKEN_RE,
     _KV_ASSIGN_RE,
+    _ROUTING_ARG_KEYS,
     _SENSITIVE_KEY_WORDS,
     _extract_secret_candidates,
     _has_mixed_classes,
     _is_printable_utf8,
     _shannon_entropy,
+    normalize_nfkc_strip_cf,
 )
-from diodemcp.types import CandidateCall, TaintSpan
+from diodemcp.types import CandidateCall, CapabilityFlag, TaintSpan
 
 REDACTED_CALL_PLACEHOLDER: str = "[REDACTED_BY_DIODEMCP]"
 REDACTED_AUDIT_PLACEHOLDER: str = "[REDACTED]"
+
+_BOILERPLATE_LINES: frozenset[str] = frozenset(
+    {
+        "from __future__ import annotations",
+        "import os",
+        "import sys",
+        "import json",
+        "import re",
+        "return none",
+        "return true",
+        "return false",
+        "export default",
+        "module.exports =",
+        '"use strict";',
+        "'use strict';",
+        "#!/usr/bin/env python3",
+        "#!/bin/bash",
+        "set -euo pipefail",
+        "except exception:",
+    }
+)
 
 _PEM_BLOCK_RE = re.compile(
     r"-----BEGIN (?:[A-Z0-9 ]{1,32} )?PRIVATE KEY-----[\s\S]*?(?:-----END (?:[A-Z0-9 ]{1,32} )?PRIVATE KEY-----|$)"
@@ -70,20 +93,51 @@ def _dedupe_spans(
     return out
 
 
-def _collect_span_needles(spans: Sequence[TaintSpan]) -> tuple[list[str], list[str], list[str]]:
-    """Return `(case_sensitive_needles, case_insensitive_needles, raw_markers)` sorted longest-first."""
+def _is_boilerplate_line(stripped: str) -> bool:
+    low = stripped.lower()
+    if low in _BOILERPLATE_LINES:
+        return True
+    if low.startswith(("import ", "from ")) and len(low) < 40 and "secret" not in low and "key" not in low:
+        return True
+    return False
+
+
+def _collect_span_needles_detailed(
+    spans: Sequence[TaintSpan],
+    *,
+    line_window_spans: Sequence[TaintSpan] | None = None,
+) -> tuple[list[str], list[str], list[str], frozenset[str], frozenset[str]]:
+    """Return `(exact_needles, ci_needles, raw_markers, non_hs_emails, hs_emails)`."""
     exact_set: set[str] = set()
     ci_set: set[str] = set()
     raw_markers: set[str] = set()
+    non_hs_emails: set[str] = set()
+    hs_emails: set[str] = set()
+
+    lw_span_keys = (
+        None
+        if line_window_spans is None
+        else {(sp.span_id, sp.text[:128]) for sp in line_window_spans}
+    )
 
     for span in spans:
+        norm_text = normalize_nfkc_strip_cf(span.text)
+        is_hs = CapabilityFlag.HIGH_SECRET in span.flags
         secrets = _extract_secret_candidates(span)
-        emails = _EMAIL_RE.findall(span.text)
+        emails = _EMAIL_RE.findall(norm_text)
+        for em in emails:
+            if is_hs:
+                hs_emails.add(em.casefold())
+            else:
+                non_hs_emails.add(em.casefold())
+
         for token in [*secrets, *emails]:
             if len(token) < 6:
                 continue
             raw_markers.add(token)
             exact_set.add(token)
+            if token in emails:
+                ci_set.add(token)
             exact_set.add(token[::-1])
 
             tok_bytes = token.encode("utf-8")
@@ -117,23 +171,48 @@ def _collect_span_needles(spans: Sequence[TaintSpan]) -> tuple[list[str], list[s
                 dotted = ".".join(token[i : i + 4] for i in range(0, len(token), 4))
                 exact_set.add(dotted)
 
-        for line in span.text.splitlines():
-            stripped = line.strip()
-            if len(stripped) >= 15:
-                exact_set.add(stripped)
-                raw_markers.add(stripped)
+        include_lw = (
+            lw_span_keys is None
+            or is_hs
+            or (span.span_id, span.text[:128]) in lw_span_keys
+        )
+        if include_lw:
+            for line in norm_text.splitlines():
+                stripped = line.strip()
+                if len(stripped) >= 15 and not _is_boilerplate_line(stripped):
+                    exact_set.add(stripped)
+                    raw_markers.add(stripped)
 
-        norm_span = " ".join(span.text.split())
-        if len(norm_span) >= 48:
-            step = max(12, len(norm_span) // 32)
-            for start in range(0, len(norm_span) - 47, step):
-                win = norm_span[start : start + 48]
-                exact_set.add(win)
-                raw_markers.add(win)
+            norm_span = " ".join(norm_text.split())
+            if len(norm_span) >= 48:
+                step = max(12, len(norm_span) // 32)
+                for start in range(0, len(norm_span) - 47, step):
+                    win = norm_span[start : start + 48]
+                    exact_set.add(win)
+                    raw_markers.add(win)
 
     exact_sorted = sorted(exact_set, key=len, reverse=True)
     ci_sorted = sorted(ci_set, key=len, reverse=True)
     markers_sorted = sorted(raw_markers, key=len, reverse=True)
+    return (
+        exact_sorted,
+        ci_sorted,
+        markers_sorted,
+        frozenset(non_hs_emails),
+        frozenset(hs_emails),
+    )
+
+
+def _collect_span_needles(
+    spans: Sequence[TaintSpan],
+    *,
+    line_window_spans: Sequence[TaintSpan] | None = None,
+) -> tuple[list[str], list[str], list[str]]:
+    """Return `(case_sensitive_needles, case_insensitive_needles, raw_markers)` sorted longest-first."""
+    exact_sorted, ci_sorted, markers_sorted, _non_hs, _hs = _collect_span_needles_detailed(
+        spans,
+        line_window_spans=line_window_spans,
+    )
     return exact_sorted, ci_sorted, markers_sorted
 
 
@@ -266,7 +345,7 @@ def _scrub_encoded_tokens(
     return out
 
 
-def _scrub_string(
+def _scrub_string_once(
     value: str,
     exact_needles: Sequence[str],
     ci_needles: Sequence[str],
@@ -274,21 +353,29 @@ def _scrub_string(
     placeholder: str,
     *,
     scrub_high_entropy: bool,
+    skip_emails: frozenset[str] = frozenset(),
 ) -> str:
-    if not value:
-        return value
-
     out = _PEM_BLOCK_RE.sub(placeholder, value)
     out = _URI_CRED_RE.sub(rf"\1{placeholder}\3", out)
     out = _BEARER_TOKEN_RE.sub(rf"\1{placeholder}", out)
     out = _EXTENDED_SECRET_RE.sub(placeholder, out)
 
     for needle in exact_needles:
-        if needle and needle in out and "REDACTED" not in needle:
+        if (
+            needle
+            and needle.casefold() not in skip_emails
+            and needle in out
+            and "REDACTED" not in needle
+        ):
             out = out.replace(needle, placeholder)
 
     for ci_needle in ci_needles:
-        if ci_needle and "REDACTED" not in ci_needle and ci_needle.lower() in out.lower():
+        if (
+            ci_needle
+            and ci_needle.casefold() not in skip_emails
+            and "REDACTED" not in ci_needle
+            and ci_needle.lower() in out.lower()
+        ):
             out = re.sub(re.escape(ci_needle), placeholder, out, flags=re.IGNORECASE)
 
     out = _scrub_encoded_tokens(out, raw_markers, placeholder)
@@ -320,6 +407,44 @@ def _scrub_string(
     return out
 
 
+def _scrub_string(
+    value: str,
+    exact_needles: Sequence[str],
+    ci_needles: Sequence[str],
+    raw_markers: Sequence[str],
+    placeholder: str,
+    *,
+    scrub_high_entropy: bool,
+    skip_emails: frozenset[str] = frozenset(),
+) -> str:
+    if not value:
+        return value
+
+    scrubbed = _scrub_string_once(
+        value,
+        exact_needles,
+        ci_needles,
+        raw_markers,
+        placeholder,
+        scrub_high_entropy=scrub_high_entropy,
+        skip_emails=skip_emails,
+    )
+    norm_val = normalize_nfkc_strip_cf(value)
+    if norm_val != value:
+        scrubbed_norm = _scrub_string_once(
+            norm_val,
+            exact_needles,
+            ci_needles,
+            raw_markers,
+            placeholder,
+            scrub_high_entropy=scrub_high_entropy,
+            skip_emails=skip_emails,
+        )
+        if scrubbed_norm != norm_val:
+            return scrubbed_norm
+    return scrubbed
+
+
 def _path_matches_attributed(leaf_path: str, attributed_arg_key: str | None) -> bool:
     if not attributed_arg_key:
         return False
@@ -328,6 +453,44 @@ def _path_matches_attributed(leaf_path: str, attributed_arg_key: str | None) -> 
         or leaf_path.startswith(f"{attributed_arg_key}.")
         or leaf_path.startswith(f"{attributed_arg_key}[")
     )
+
+
+def _line_window_spans(
+    leaked_span: TaintSpan | None,
+    all_spans: Sequence[TaintSpan],
+) -> list[TaintSpan]:
+    out: list[TaintSpan] = []
+    seen_keys: set[tuple[str, str]] = set()
+    for sp in all_spans:
+        is_leaked = (
+            leaked_span is not None
+            and sp.span_id == leaked_span.span_id
+            and sp.text[:128] == leaked_span.text[:128]
+        )
+        if is_leaked or (CapabilityFlag.HIGH_SECRET in sp.flags):
+            key = (sp.span_id, sp.text[:128])
+            if key not in seen_keys:
+                seen_keys.add(key)
+                out.append(sp)
+    return out
+
+
+def _single_routing_email_skips(
+    prefix: str,
+    text: str,
+    non_hs_emails: frozenset[str],
+    hs_emails: frozenset[str],
+) -> frozenset[str]:
+    if not non_hs_emails:
+        return frozenset()
+    leaf_key = prefix.rsplit(".", 1)[-1].split("[", 1)[0].strip().lower()
+    if leaf_key not in _ROUTING_ARG_KEYS:
+        return frozenset()
+    norm_cf = normalize_nfkc_strip_cf(text).casefold()
+    matched = [em for em in non_hs_emails if em in norm_cf and em not in hs_emails]
+    if len(matched) == 1:
+        return frozenset(matched)
+    return frozenset()
 
 
 def redact_call_arguments(
@@ -343,7 +506,10 @@ def redact_call_arguments(
         return copied_args
 
     all_spans = _dedupe_spans(leaked_span, private_spans)
-    exact_needles, ci_needles, raw_markers = _collect_span_needles(all_spans)
+    lw_spans = _line_window_spans(leaked_span, all_spans)
+    exact_needles, ci_needles, raw_markers, non_hs_emails, hs_emails = (
+        _collect_span_needles_detailed(all_spans, line_window_spans=lw_spans)
+    )
 
     def _redact_all_leaves(subnode: Any) -> tuple[Any, bool]:
         if isinstance(subnode, dict):
@@ -414,6 +580,9 @@ def redact_call_arguments(
 
         if isinstance(node, str):
             is_attr = _path_matches_attributed(prefix, attributed_arg_key)
+            skip_em = _single_routing_email_skips(
+                prefix, node, non_hs_emails, hs_emails
+            )
             scrubbed = _scrub_string(
                 node,
                 exact_needles,
@@ -421,10 +590,11 @@ def redact_call_arguments(
                 raw_markers,
                 REDACTED_CALL_PLACEHOLDER,
                 scrub_high_entropy=is_attr,
+                skip_emails=skip_em,
             )
             if scrubbed != node:
                 return scrubbed, True
-            if prefix == attributed_arg_key:
+            if prefix == attributed_arg_key and not skip_em:
                 return REDACTED_CALL_PLACEHOLDER, True
             return node, False
 
@@ -461,13 +631,19 @@ def build_redacted_audit_preview(
         return {}
 
     all_spans = _dedupe_spans(leaked_span, private_spans)
-    exact_needles, ci_needles, raw_markers = _collect_span_needles(all_spans)
+    lw_spans = _line_window_spans(leaked_span, all_spans)
+    exact_needles, ci_needles, raw_markers, non_hs_emails, hs_emails = (
+        _collect_span_needles_detailed(all_spans, line_window_spans=lw_spans)
+    )
     flat = flatten_call_arguments(args, max_args=None)
 
     preview: dict[str, str] = {}
     for flat_key, raw_val in flat.items():
         key_l = flat_key.rsplit(".", 1)[-1].split("[", 1)[0].lower()
         is_attr = _path_matches_attributed(flat_key, attributed_arg_key)
+        skip_em = _single_routing_email_skips(
+            flat_key, raw_val, non_hs_emails, hs_emails
+        )
 
         scrubbed = _scrub_string(
             raw_val,
@@ -476,12 +652,13 @@ def build_redacted_audit_preview(
             raw_markers,
             REDACTED_AUDIT_PLACEHOLDER,
             scrub_high_entropy=True,
+            skip_emails=skip_em,
         )
 
         # Sensitive parameter names (e.g. password, api_key, secret, authorization) or attributed
         # paraphrased leaks with no narrower match mask their payload completely.
         if scrubbed == raw_val and raw_val:
-            if is_attr:
+            if is_attr and not skip_em:
                 scrubbed = REDACTED_AUDIT_PLACEHOLDER
             elif any(w in key_l for w in _SENSITIVE_KEY_WORDS) and raw_val.lower() not in {
                 "true",

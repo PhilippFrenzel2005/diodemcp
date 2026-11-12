@@ -173,13 +173,19 @@ class OrtJevPredictor:
         untrusted_spans: list[TaintSpan],
         snapshot: LedgerSnapshot,
         call: CandidateCall,
+        *,
+        tier0_result: DecisionScores | None = None,
     ) -> DecisionScores:
         # 1. Full-ledger deterministic Tier-0 floor (zero truncation bypass — C1 / R5)
-        tier0_scores = self.tier0.evaluate(
-            intent=intent,
-            private_spans=private_spans,
-            untrusted_spans=untrusted_spans,
-            call=call,
+        tier0_scores = (
+            tier0_result
+            if tier0_result is not None
+            else self.tier0.evaluate(
+                intent=intent,
+                private_spans=private_spans,
+                untrusted_spans=untrusted_spans,
+                call=call,
+            )
         )
 
         # 2. Default 512-token pre-selected Jev window inference
@@ -278,6 +284,8 @@ class OrtJevPredictor:
         self,
         snapshot: LedgerSnapshot,
         call: CandidateCall,
+        *,
+        tier0_result: DecisionScores | None = None,
     ) -> DecisionScores:
         """Evaluate `(snapshot, call)` directly without re-copying `LedgerSnapshot`."""
         return self._evaluate_core(
@@ -286,6 +294,7 @@ class OrtJevPredictor:
             untrusted_spans=list(snapshot.untrusted_spans),
             snapshot=snapshot,
             call=call,
+            tier0_result=tier0_result,
         )
 
     def evaluate(
@@ -294,6 +303,8 @@ class OrtJevPredictor:
         private_spans: list[TaintSpan],
         untrusted_spans: list[TaintSpan],
         call: CandidateCall,
+        *,
+        tier0_result: DecisionScores | None = None,
     ) -> DecisionScores:
         """Evaluate `(intent, private_spans, untrusted_spans, call)` per `PredictorProtocol`."""
         snapshot = LedgerSnapshot(
@@ -307,4 +318,7 @@ class OrtJevPredictor:
             untrusted_spans=untrusted_spans,
             snapshot=snapshot,
             call=call,
+            tier0_result=tier0_result,
         )
+
+    predict = evaluate
