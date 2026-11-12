@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from diodemcp.bundle import BundleManifest, BundleValidationError, validate_bundle_dir
+from diodemcp.hub import BundleDownloadError, MODEL_ALIASES, download_and_verify_bundle
 from diodemcp.ledger import (
     LedgerSnapshot,
     SessionLedger,
     compute_simhash64,
     compute_workspace_key,
 )
+from diodemcp.ort_predictor import OrtJevPredictor
 from diodemcp.packer import (
     JevWindowPacker,
     PackedJevInputs,
@@ -31,6 +33,7 @@ __version__ = "0.1.0"
 
 __all__ = [
     "__version__",
+    "BundleDownloadError",
     "BundleManifest",
     "BundleValidationError",
     "CandidateCall",
@@ -39,6 +42,8 @@ __all__ = [
     "DecisionScores",
     "JevWindowPacker",
     "LedgerSnapshot",
+    "MODEL_ALIASES",
+    "OrtJevPredictor",
     "PackedJevInputs",
     "PredictorProtocol",
     "REDACTED_AUDIT_PLACEHOLDER",
@@ -52,6 +57,7 @@ __all__ = [
     "canonicalize_target_path",
     "compute_simhash64",
     "compute_workspace_key",
+    "download_and_verify_bundle",
     "encode_content_safe",
     "flatten_call_arguments",
     "redact_call_arguments",
