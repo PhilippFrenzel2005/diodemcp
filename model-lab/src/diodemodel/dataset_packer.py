@@ -81,23 +81,23 @@ _HEX_CANDIDATE_RE = re.compile(r"[0-9a-fA-F]{16,}")
 _PCT_ALNUM_RE = re.compile(r"%[3-7][0-9a-fA-F]")
 
 _SYNTH_SECRET_AUDIT_RE = re.compile(
-    r"\b(?:sk_synth|sk_test_synth|sk_openai_synth|hf_synth_tok|whsec_synth|jwt_synth_tok|"
-    r"holdout_synth|gh_synth_tok|github_pat_synth|SYNTH_AWS_KEY|SYNTH_GCP_APIKEY|"
+    r"\b(?:sk_synth|sk_test_synth|sk_openai_synth|hf_synth_tok|wh_synth_tok|whsec_synth|jwt_synth_tok|"
+    r"holdout_synth|gh_synth_tok|ghpat_synth_tok|github_pat_synth|SYNTH_AWS_KEY|SYNTH_GCP_APIKEY|"
     r"aws_synth_secret|k8s_synth_bearer|npm_synth_tok|IBAN_SYNTH|OPENSSH_SYNTH_TEST_KEY|"
     r"gcp_synth_keyid|internal_wiki_synth_tok|xox_synth_tok|agentdojo_synth_code|mcpsec_synth_tok)"
     r"_[A-Za-z0-9_]{6,}\b"
 )
 _REAL_SECRET_AUDIT_RE = re.compile(
-    r"(?:\bsk_live_[A-Za-z0-9_]{4,}\b"
-    r"|\bsk-(?:proj-|svcacct-|live-)?[A-Za-z0-9_-]{20,}\b"
-    r"|\bhf_[A-Za-z0-9]{24,}\b"
-    r"|\bwhsec_[A-Za-z0-9_]{12,}\b"
+    r"(?:\bsk_live_(?!synth_)[A-Za-z0-9_]{4,}\b"
+    r"|\bsk-(?!synth_)(?:proj-|svcacct-|live-)?[A-Za-z0-9_-]{20,}\b"
+    r"|\bhf_(?!synth_)[A-Za-z0-9]{24,}\b"
+    r"|\bwhsec_(?!synth_)[A-Za-z0-9_]{12,}\b"
     r"|\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"
-    r"|\bgh[pousr]_[A-Za-z0-9_]{10,}\b"
-    r"|\bgithub_pat_[A-Za-z0-9_]{10,}\b"
+    r"|\bgh[pousr]_(?!synth_)[A-Za-z0-9_]{10,}\b"
+    r"|\bgithub_pat_(?!synth_)[A-Za-z0-9_]{10,}\b"
     r"|\bAKIA[0-9A-Z]{12,}\b"
     r"|\bAIza[0-9A-Za-z\-_]{20,}\b"
-    r"|\bxox[baprs]-[0-9A-Za-z\-]{10,}\b)"
+    r"|\bxox[baprs]-(?!synth_)[0-9A-Za-z\-]{10,}\b)"
 )
 
 
@@ -662,9 +662,11 @@ class JevDatasetPacker:
             eff_y_enc = 0.0
             eff_y_sem = 0.0
 
-        if max(eff_y_enc, eff_y_sem, eff_y_hijack) < 0.5 or attributed_arg_key is None:
+        if max(eff_y_enc, eff_y_sem, eff_y_hijack) < 0.5:
             target_arg_idx = max_args
-            if max(eff_y_enc, eff_y_sem, eff_y_hijack) >= 0.5:
+        elif attributed_arg_key is None:
+            target_arg_idx = max_args
+            if all_flat_args or max(eff_y_enc, eff_y_sem) >= 0.5:
                 eff_y_enc = 0.0
                 eff_y_sem = 0.0
                 eff_y_hijack = 0.0
@@ -1314,7 +1316,9 @@ def pack_dataset_to_parquet(
         batch_rows: list[dict[str, Any]] = []
         wrote_any_batch = False
 
-        with pq.ParquetWriter(str(target_file), PACKED_PARQUET_SCHEMA) as writer:
+        with pq.ParquetWriter(
+            str(target_file), PACKED_PARQUET_SCHEMA, compression="zstd"
+        ) as writer:
             for pair in pairs:
                 packed = packer.pack_pair(
                     pair, max_bucket=max_bucket, pad_to_max_bucket=pad_to_max_bucket
@@ -1446,7 +1450,10 @@ def audit_packed_splits(
                     violations.append(
                         f"Non-leak row must point target_src_idx=32, got {t_src} on {r['pair_id']}"
                     )
-                if max(row_y_enc, row_y_sem, row_y_hijack) >= 0.5 and t_arg >= 16:
+                has_any_args = any(r["arg_valid_mask"][:16])
+                if (
+                    max(row_y_enc, row_y_sem) >= 0.5 or (row_y_hijack >= 0.5 and has_any_args)
+                ) and t_arg >= 16:
                     violations.append(
                         f"Contradictory attack supervision with target_arg_idx={t_arg} on {r['pair_id']}"
                     )

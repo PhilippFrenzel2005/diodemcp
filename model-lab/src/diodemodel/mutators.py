@@ -153,8 +153,8 @@ _ROUTING_METADATA_ARG_KEYS: frozenset[str] = frozenset({"repo", "channel", "team
 
 _EXTRA_REAL_SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bAKIA[0-9A-Z]{12,}\b"), "SYNTH_AWS_KEY"),
-    (re.compile(r"\bsk_live_[A-Za-z0-9_]{4,}\b"), "sk_synth"),
-    (re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{10,}\b"), "gh_synth_tok"),
+    (re.compile(r"\bsk_live_(?!synth_)[A-Za-z0-9_]{4,}\b"), "sk_synth"),
+    (re.compile(r"\bgh[pousr]_(?!synth_)[A-Za-z0-9_]{10,}\b"), "gh_synth_tok"),
 )
 
 _IDENTIFIER_TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{5,}")
@@ -163,7 +163,8 @@ _CAMEL_OR_PASCAL_MARKER_RE = re.compile(
     r"\b(?:[a-z][a-z0-9]*[A-Z][A-Za-z0-9]{2,}|[A-Z][a-z0-9]+[A-Z][A-Za-z0-9]{1,})\b"
 )
 _SYNTH_OR_SECRET_TOKEN_RE = re.compile(
-    r"\b(?:sk_synth|sk_test_synth|gh_synth_tok|github_pat_synth|SYNTH_AWS_KEY|SYNTH_GCP_APIKEY|"
+    r"\b(?:sk_synth|sk_test_synth|sk_openai_synth|hf_synth_tok|wh_synth_tok|jwt_synth_tok|"
+    r"holdout_synth|gh_synth_tok|ghpat_synth_tok|github_pat_synth|SYNTH_AWS_KEY|SYNTH_GCP_APIKEY|"
     r"aws_synth_secret|k8s_synth_bearer|npm_synth_tok|IBAN_SYNTH|OPENSSH_SYNTH_TEST_KEY|"
     r"gcp_synth_keyid|internal_wiki_synth_tok|xox_synth_tok|cus_synth)[A-Za-z0-9_-]*\b"
 )
