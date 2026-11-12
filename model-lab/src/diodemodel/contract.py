@@ -4,14 +4,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import json
 import math
 from pathlib import Path
 import re
-from typing import Literal
+from typing import Any, Literal
 
 import onnx
 from onnx import TensorProto
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
+from tokenizers import Tokenizer
 
 
 JEV_SPECIAL_TOKENS: tuple[str, ...] = (
@@ -32,7 +34,15 @@ JEV_SPECIAL_TOKENS: tuple[str, ...] = (
 )
 
 REQUIRED_BASE_SPECIAL_TOKENS: tuple[str, ...] = ("[CLS]", "[SEP]", "[PAD]")
-ALL_STRUCTURAL_SPECIAL_TOKENS: tuple[str, ...] = REQUIRED_BASE_SPECIAL_TOKENS + JEV_SPECIAL_TOKENS
+REQUIRED_SPECIAL_TOKENS: tuple[str, ...] = REQUIRED_BASE_SPECIAL_TOKENS + JEV_SPECIAL_TOKENS
+ALL_STRUCTURAL_SPECIAL_TOKENS: tuple[str, ...] = REQUIRED_SPECIAL_TOKENS
+
+REQUIRED_BUNDLE_FILES: tuple[str, ...] = (
+    "manifest.json",
+    "model_int8.onnx",
+    "tokenizer.json",
+    "calibration.json",
+)
 
 CANONICAL_SEGMENT_IDS: dict[str, int] = {
     "TRUSTED_INTENT": 0,
@@ -55,6 +65,10 @@ TOKEN_ROLES: dict[str, int] = {
 ONNX_OPSET_VERSION: int = 17
 DEFAULT_LENGTH_BUCKETS: list[int] = [128, 256, 512, 1024, 2048, 4096]
 _HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+class BundleValidationError(ValueError):
+    """Raised when a DiodeModelBundle v1 directory fails structural, SHA256, or ONNX validation."""
 
 
 @dataclass(frozen=True)
@@ -85,7 +99,7 @@ ONNX_OUTPUT_SPECS: dict[str, TensorSpec] = {
 
 
 def clamp_thresholds(thresholds: dict[str, float]) -> dict[str, float]:
-    """Clamp warn_min to [0.05, 0.30] and critical_min to [0.50, 0.90]."""
+    """Explicit export helper: clamp warn_min to [0.05, 0.30] and critical_min to [0.50, 0.90]."""
     if "warn_min" not in thresholds or "critical_min" not in thresholds:
         raise ValueError("thresholds must contain both 'warn_min' and 'critical_min'")
     warn_raw = float(thresholds["warn_min"])
@@ -98,14 +112,14 @@ def clamp_thresholds(thresholds: dict[str, float]) -> dict[str, float]:
 
 
 class BundleManifest(BaseModel):
-    """Manifest schema for DiodeModelBundle v1."""
+    """Manifest schema for DiodeModelBundle v1 (exact parity with Track B bundle.py)."""
 
     bundle_version: Literal["1.0"] = "1.0"
-    model_id: str
+    model_id: str = Field(min_length=1)
     sha256_model_onnx: str
     sha256_tokenizer_json: str
     sha256_calibration_json: str
-    max_seq_len: int = 8192
+    max_seq_len: int = Field(default=8192, ge=1)
     length_buckets: list[int] = Field(default_factory=lambda: list(DEFAULT_LENGTH_BUCKETS))
     max_pchunks: int = 32
     max_args: int = 16
@@ -114,7 +128,7 @@ class BundleManifest(BaseModel):
     thresholds: dict[str, float] = Field(
         default_factory=lambda: {"warn_min": 0.20, "critical_min": 0.80}
     )
-    ece_val: float
+    ece_val: float = Field(ge=0.0, le=1.0)
 
     @field_validator("model_id")
     @classmethod
@@ -128,21 +142,18 @@ class BundleManifest(BaseModel):
     @classmethod
     def _validate_sha256_hex(cls, value: str) -> str:
         if not _HEX64_RE.fullmatch(value):
-            raise ValueError(f"Expected 64-character lowercase hex SHA-256 digest, got {value!r}")
-        return value
-
-    @field_validator("max_seq_len")
-    @classmethod
-    def _validate_max_seq_len(cls, value: int) -> int:
-        if value <= 0:
-            raise ValueError("max_seq_len must be positive")
+            raise ValueError("SHA256 digest must be a 64-character lowercase hex string")
         return value
 
     @field_validator("length_buckets")
     @classmethod
     def _validate_length_buckets(cls, value: list[int]) -> list[int]:
-        if not value or any(b <= 0 for b in value) or sorted(set(value)) != value:
-            raise ValueError("length_buckets must be a strictly increasing list of positive integers")
+        if not value:
+            raise ValueError("length_buckets must not be empty")
+        if any(b <= 0 for b in value):
+            raise ValueError("length_buckets must contain only positive integers")
+        if any(value[i] >= value[i + 1] for i in range(len(value) - 1)):
+            raise ValueError("length_buckets must be strictly ascending")
         return value
 
     @field_validator("max_pchunks")
@@ -162,17 +173,22 @@ class BundleManifest(BaseModel):
     @field_validator("special_token_ids")
     @classmethod
     def _validate_special_token_ids(cls, value: dict[str, int]) -> dict[str, int]:
-        missing = [tok for tok in ALL_STRUCTURAL_SPECIAL_TOKENS if tok not in value]
+        missing = [tok for tok in REQUIRED_SPECIAL_TOKENS if tok not in value]
         if missing:
-            raise ValueError(f"special_token_ids missing required tokens: {missing}")
+            raise ValueError(f"Missing required special tokens: {missing}")
+        extra = [tok for tok in value if tok not in REQUIRED_SPECIAL_TOKENS]
+        if extra:
+            raise ValueError(f"Unexpected extra special tokens: {extra}")
+
         seen_ids: dict[int, str] = {}
-        for tok in ALL_STRUCTURAL_SPECIAL_TOKENS:
+        for tok in REQUIRED_SPECIAL_TOKENS:
             tok_id = value[tok]
             if isinstance(tok_id, bool) or not isinstance(tok_id, int) or tok_id < 0:
-                raise ValueError(f"Token {tok!r} must map to a non-negative int ID, got {tok_id!r}")
+                raise ValueError(f"Special token {tok!r} must map to a non-negative int")
             if tok_id in seen_ids:
                 raise ValueError(
-                    f"Duplicate special token ID {tok_id} shared by {seen_ids[tok_id]!r} and {tok!r}"
+                    f"All 17 REQUIRED_SPECIAL_TOKENS must have distinct integer IDs "
+                    f"(duplicate {tok_id} on {seen_ids[tok_id]!r} and {tok!r})"
                 )
             seen_ids[tok_id] = tok
         return value
@@ -181,13 +197,29 @@ class BundleManifest(BaseModel):
     @classmethod
     def _validate_segment_ids(cls, value: dict[str, int]) -> dict[str, int]:
         if value != CANONICAL_SEGMENT_IDS:
-            raise ValueError(f"segment_ids must equal {CANONICAL_SEGMENT_IDS}, got {value}")
+            raise ValueError(
+                f"segment_ids must match CANONICAL_SEGMENT_IDS ({CANONICAL_SEGMENT_IDS})"
+            )
         return value
 
     @field_validator("thresholds")
     @classmethod
-    def _validate_and_clamp_thresholds(cls, value: dict[str, float]) -> dict[str, float]:
-        return clamp_thresholds(value)
+    def _validate_thresholds(cls, value: dict[str, float]) -> dict[str, float]:
+        if "warn_min" not in value or "critical_min" not in value:
+            raise ValueError("thresholds must include 'warn_min' and 'critical_min'")
+        warn_min = value["warn_min"]
+        critical_min = value["critical_min"]
+        if isinstance(warn_min, bool) or isinstance(critical_min, bool):
+            raise ValueError("thresholds must be numeric floats, not booleans")
+        if not (math.isfinite(warn_min) and math.isfinite(critical_min)):
+            raise ValueError("thresholds must be finite floats")
+        if not (0.05 <= warn_min <= 0.30):
+            raise ValueError("warn_min must satisfy 0.05 <= warn_min <= 0.30")
+        if not (0.50 <= critical_min <= 0.90):
+            raise ValueError("critical_min must satisfy 0.50 <= critical_min <= 0.90")
+        if not (warn_min < critical_min):
+            raise ValueError("thresholds must satisfy warn_min < critical_min")
+        return {"warn_min": float(warn_min), "critical_min": float(critical_min)}
 
     @field_validator("ece_val")
     @classmethod
@@ -196,12 +228,18 @@ class BundleManifest(BaseModel):
             raise ValueError(f"ece_val must be in [0.0, 1.0], got {value!r}")
         return value
 
+    @model_validator(mode="after")
+    def _validate_max_seq_len_covers_buckets(self) -> BundleManifest:
+        if self.max_seq_len < self.length_buckets[-1]:
+            raise ValueError("max_seq_len must be >= the largest bucket in length_buckets")
+        return self
+
 
 def compute_sha256(file_path: Path) -> str:
     """Compute lowercase SHA-256 hex digest of a file."""
     hasher = hashlib.sha256()
     with file_path.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+        while chunk := fh.read(65536):
             hasher.update(chunk)
     return hasher.hexdigest()
 
@@ -276,29 +314,113 @@ def validate_onnx_contract(onnx_path: Path) -> None:
         _validate_value_info(out_proto, ONNX_OUTPUT_SPECS[out_proto.name], kind="output")
 
 
-def validate_bundle_dir(bundle_dir: Path, verify_sha256: bool = True) -> BundleManifest:
-    """Validate a complete DiodeModelBundle v1 directory on disk."""
-    bundle_dir = Path(bundle_dir)
-    manifest_path = bundle_dir / "manifest.json"
-    onnx_path = bundle_dir / "model_int8.onnx"
-    tokenizer_path = bundle_dir / "tokenizer.json"
-    calibration_path = bundle_dir / "calibration.json"
+def _verify_tokenizer_special_tokens(
+    tokenizer_path: Path,
+    raw_tok: dict[str, Any],
+    expected_ids: dict[str, int],
+) -> None:
+    if not any(k in raw_tok for k in ("model", "added_tokens", "vocab")):
+        raise BundleValidationError(
+            f"Invalid tokenizer.json in {tokenizer_path.parent}: "
+            "must contain 'model', 'added_tokens', or 'vocab'"
+        )
 
-    for req_path in (manifest_path, onnx_path, tokenizer_path, calibration_path):
-        if not req_path.is_file():
-            raise FileNotFoundError(f"Missing required bundle artifact: {req_path}")
+    if "model" in raw_tok:
+        try:
+            tok_obj = Tokenizer.from_file(str(tokenizer_path))
+        except Exception as exc:
+            raise BundleValidationError(
+                f"Invalid tokenizer.json in {tokenizer_path.parent}: {exc}"
+            ) from exc
 
-    manifest = BundleManifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
-    if verify_sha256:
-        for path, expected_sha, label in (
-            (onnx_path, manifest.sha256_model_onnx, "model_int8.onnx"),
-            (tokenizer_path, manifest.sha256_tokenizer_json, "tokenizer.json"),
-            (calibration_path, manifest.sha256_calibration_json, "calibration.json"),
-        ):
-            actual_sha = compute_sha256(path)
-            if actual_sha != expected_sha:
-                raise ValueError(
-                    f"SHA-256 mismatch for {label}: expected {expected_sha}, got {actual_sha}"
+        for tok_str, expected_id in expected_ids.items():
+            actual_id = tok_obj.token_to_id(tok_str)
+            if actual_id != expected_id:
+                raise BundleValidationError(
+                    f"Tokenizer special token mismatch for {tok_str!r}: "
+                    f"manifest expects {expected_id}, tokenizer has {actual_id}"
                 )
-    validate_onnx_contract(onnx_path)
+        return
+
+    combined: dict[str, Any] = {}
+    vocab = raw_tok.get("vocab")
+    if isinstance(vocab, dict):
+        combined.update(vocab)
+    added = raw_tok.get("added_tokens")
+    if isinstance(added, list):
+        for entry in added:
+            if isinstance(entry, dict) and "content" in entry and "id" in entry:
+                combined[str(entry["content"])] = entry["id"]
+
+    for tok_str, expected_id in expected_ids.items():
+        actual_id = combined.get(tok_str)
+        if actual_id != expected_id:
+            raise BundleValidationError(
+                f"Tokenizer special token mismatch for {tok_str!r}: "
+                f"manifest expects {expected_id}, tokenizer has {actual_id}"
+            )
+
+
+def validate_bundle_dir(bundle_dir: Path, verify_sha256: bool = True) -> BundleManifest:
+    """Validate a complete DiodeModelBundle v1 directory, SHA256s, tokenizer IDs, and ONNX graph."""
+    root = Path(bundle_dir)
+    if not root.exists() or not root.is_dir():
+        raise BundleValidationError(f"Bundle directory does not exist: {root}")
+
+    for filename in REQUIRED_BUNDLE_FILES:
+        candidate = root / filename
+        if not candidate.is_file():
+            raise BundleValidationError(
+                f"Bundle directory {root} is missing required file: {filename}"
+            )
+
+    manifest_path = root / "manifest.json"
+    try:
+        raw_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest = BundleManifest.model_validate(raw_manifest)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValidationError) as exc:
+        raise BundleValidationError(f"Invalid manifest.json in {root}: {exc}") from exc
+
+    calibration_path = root / "calibration.json"
+    try:
+        raw_calibration = json.loads(calibration_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise BundleValidationError(f"Invalid calibration.json in {root}: {exc}") from exc
+    if not isinstance(raw_calibration, dict):
+        raise BundleValidationError(f"Invalid calibration.json in {root}: expected JSON object")
+
+    tokenizer_path = root / "tokenizer.json"
+    try:
+        raw_tokenizer = json.loads(tokenizer_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise BundleValidationError(f"Invalid tokenizer.json in {root}: {exc}") from exc
+    if not isinstance(raw_tokenizer, dict):
+        raise BundleValidationError(f"Invalid tokenizer.json in {root}: expected JSON object")
+
+    if verify_sha256:
+        expected_hashes = (
+            ("model_int8.onnx", manifest.sha256_model_onnx),
+            ("tokenizer.json", manifest.sha256_tokenizer_json),
+            ("calibration.json", manifest.sha256_calibration_json),
+        )
+        for filename, expected_sha in expected_hashes:
+            artifact_path = root / filename
+            try:
+                actual_sha = compute_sha256(artifact_path)
+            except OSError as exc:
+                raise BundleValidationError(f"Failed reading {artifact_path}: {exc}") from exc
+            if actual_sha != expected_sha:
+                raise BundleValidationError(
+                    f"SHA256 mismatch for {artifact_path}: expected {expected_sha}, "
+                    f"got {actual_sha}"
+                )
+
+    _verify_tokenizer_special_tokens(tokenizer_path, raw_tokenizer, manifest.special_token_ids)
+
+    onnx_path = root / "model_int8.onnx"
+    try:
+        validate_onnx_contract(onnx_path)
+    except Exception as exc:
+        raise BundleValidationError(f"Invalid model_int8.onnx in {root}: {exc}") from exc
+
     return manifest

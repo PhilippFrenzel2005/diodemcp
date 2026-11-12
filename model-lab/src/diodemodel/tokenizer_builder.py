@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 import inspect
 from pathlib import Path
 import re
@@ -10,9 +11,9 @@ from tokenizers import AddedToken, Tokenizer
 from transformers import AutoTokenizer, PreTrainedTokenizerBase, PreTrainedTokenizerFast
 
 from diodemodel.contract import (
-    ALL_STRUCTURAL_SPECIAL_TOKENS,
     JEV_SPECIAL_TOKENS,
     REQUIRED_BASE_SPECIAL_TOKENS,
+    REQUIRED_SPECIAL_TOKENS,
 )
 
 
@@ -23,6 +24,8 @@ SUPPORTED_BACKBONES: dict[str, str] = {
 }
 
 _BASE_BRACKET_SPECIAL_RE = re.compile(r"\[(CLS|SEP|PAD)\]", flags=re.IGNORECASE)
+_STRUCTURAL_ID_CACHE: OrderedDict[int, tuple[object, frozenset[int]]] = OrderedDict()
+_STRUCTURAL_ID_CACHE_MAX = 16
 
 
 def _make_unsplit_special_token(token_str: str) -> AddedToken:
@@ -82,31 +85,17 @@ def build_jev_tokenizer(base_model_id: str, out_dir: Path) -> dict[str, int]:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     tokenizer = _load_fast_tokenizer(resolved)
-    vocab = tokenizer.get_vocab()
 
-    attr_map = (
-        ("cls_token", "[CLS]"),
-        ("sep_token", "[SEP]"),
-        ("pad_token", "[PAD]"),
-    )
-    special_dict: dict[str, AddedToken | list[AddedToken]] = {}
-    extra_specials: list[AddedToken] = []
-
-    for attr_name, literal_tok in attr_map:
-        added_obj = _make_unsplit_special_token(literal_tok)
-        current_val = getattr(tokenizer, attr_name, None)
-        if current_val is None or current_val == literal_tok:
-            special_dict[attr_name] = added_obj
-        elif literal_tok not in vocab:
-            extra_specials.append(added_obj)
-        else:
-            # Ensure literal [CLS]/[SEP]/[PAD] is registered as normalized=False special token
-            extra_specials.append(added_obj)
-
-    for jev_tok in JEV_SPECIAL_TOKENS:
-        extra_specials.append(_make_unsplit_special_token(jev_tok))
-
-    special_dict["additional_special_tokens"] = extra_specials
+    # Unconditionally bind cls_token, sep_token, and pad_token to [CLS], [SEP], and [PAD]
+    # even when decoder backbones (e.g. Qwen3-0.6B) pre-populate pad_token = "<|endoftext|>".
+    special_dict: dict[str, AddedToken | list[AddedToken]] = {
+        "cls_token": _make_unsplit_special_token("[CLS]"),
+        "sep_token": _make_unsplit_special_token("[SEP]"),
+        "pad_token": _make_unsplit_special_token("[PAD]"),
+        "additional_special_tokens": [
+            _make_unsplit_special_token(jev_tok) for jev_tok in JEV_SPECIAL_TOKENS
+        ],
+    }
     _add_special_tokens_preserving_existing(tokenizer, special_dict)
 
     tokenizer.save_pretrained(str(out_dir))
@@ -129,6 +118,13 @@ def build_jev_tokenizer(base_model_id: str, out_dir: Path) -> dict[str, int]:
             )
         special_token_ids[tok_str] = int(tok_id)
 
+    if (
+        tokenizer.cls_token_id != special_token_ids["[CLS]"]
+        or tokenizer.sep_token_id != special_token_ids["[SEP]"]
+        or tokenizer.pad_token_id != special_token_ids["[PAD]"]
+    ):
+        raise RuntimeError("Tokenizer [CLS]/[SEP]/[PAD] attribute IDs do not match tokenizer.json")
+
     return special_token_ids
 
 
@@ -136,24 +132,46 @@ def sanitize_untrusted_delimiters(text: str) -> str:
     """Neutralize literal Jev `<|...|>` and `[CLS]/[SEP]/[PAD]` tokens inside raw content spans."""
     if not text:
         return ""
-    escaped = text.replace("<|", r"<\|")
-    escaped = _BASE_BRACKET_SPECIAL_RE.sub(r"[\\\1]", escaped)
-    return escaped
+    escaped = text
+    while True:
+        updated = escaped.replace("<|", r"<\|")
+        updated = _BASE_BRACKET_SPECIAL_RE.sub(r"[\\\1]", updated)
+        if updated == escaped:
+            return updated
+        escaped = updated
 
 
-def _collect_structural_ids(tokenizer: PreTrainedTokenizerBase | Tokenizer) -> set[int]:
-    structural_ids: set[int] = set()
+def _resolve_structural_ids(tokenizer: PreTrainedTokenizerBase | Tokenizer) -> frozenset[int]:
+    cache_key = id(tokenizer)
+    cached = _STRUCTURAL_ID_CACHE.get(cache_key)
+    if cached is not None and cached[0] is tokenizer:
+        _STRUCTURAL_ID_CACHE.move_to_end(cache_key)
+        return cached[1]
+
+    found: set[int] = set()
     if isinstance(tokenizer, Tokenizer):
-        for tok_str in ALL_STRUCTURAL_SPECIAL_TOKENS:
+        for tok_str in REQUIRED_SPECIAL_TOKENS:
             tid = tokenizer.token_to_id(tok_str)
             if tid is not None:
-                structural_ids.add(int(tid))
+                found.add(int(tid))
+    elif getattr(tokenizer, "is_fast", False) and hasattr(tokenizer, "backend_tokenizer"):
+        backend = tokenizer.backend_tokenizer
+        for tok_str in REQUIRED_SPECIAL_TOKENS:
+            tid = backend.token_to_id(tok_str)
+            if tid is not None:
+                found.add(int(tid))
     else:
-        vocab = tokenizer.get_vocab()
-        for tok_str in ALL_STRUCTURAL_SPECIAL_TOKENS:
-            if tok_str in vocab:
-                structural_ids.add(int(vocab[tok_str]))
-    return structural_ids
+        unk_id = getattr(tokenizer, "unk_token_id", None)
+        for tok_str in REQUIRED_SPECIAL_TOKENS:
+            tid = tokenizer.convert_tokens_to_ids(tok_str)
+            if isinstance(tid, int) and tid >= 0 and (unk_id is None or tid != unk_id):
+                found.add(tid)
+
+    frozen = frozenset(found)
+    _STRUCTURAL_ID_CACHE[cache_key] = (tokenizer, frozen)
+    while len(_STRUCTURAL_ID_CACHE) > _STRUCTURAL_ID_CACHE_MAX:
+        _STRUCTURAL_ID_CACHE.popitem(last=False)
+    return frozen
 
 
 def encode_content_safe(
@@ -164,24 +182,13 @@ def encode_content_safe(
     if not text:
         return []
     sanitized = sanitize_untrusted_delimiters(text)
-    structural_ids = _collect_structural_ids(tokenizer)
+    structural_ids = _resolve_structural_ids(tokenizer)
 
     if isinstance(tokenizer, Tokenizer):
-        try:
-            ids = list(
-                tokenizer.encode(
-                    sanitized,
-                    add_special_tokens=False,
-                    encode_special_tokens=False,
-                ).ids
-            )
-        except TypeError:
-            ids = list(tokenizer.encode(sanitized, add_special_tokens=False).ids)
+        ids = [int(x) for x in tokenizer.encode(sanitized, add_special_tokens=False).ids]
     else:
         ids = [int(x) for x in tokenizer.encode(sanitized, add_special_tokens=False)]
 
     if not set(ids).isdisjoint(structural_ids):
-        ids = [tid for tid in ids if tid not in structural_ids]
-
-    assert set(ids).isdisjoint(structural_ids), "Structural special token leaked into content span"
+        raise RuntimeError("Structural special token leaked into content span")
     return ids
