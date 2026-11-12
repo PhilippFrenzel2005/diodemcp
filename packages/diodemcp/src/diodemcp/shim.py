@@ -1922,7 +1922,11 @@ def _main_shim_cli(argv: Sequence[str] | None = None) -> int:
 
     args = parser.parse_args(list(argv) if argv is not None else None)
     if args.url:
-        parsed_headers: dict[str, str] = {}
+        from diodemcp.config_patcher import load_shim_headers_for_server
+
+        parsed_headers: dict[str, str] = load_shim_headers_for_server(
+            args.state_dir, args.server
+        )
         for item in args.header:
             if ":" in item:
                 k, v = item.split(":", 1)

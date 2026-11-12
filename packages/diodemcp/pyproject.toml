@@ -18,6 +18,9 @@ dependencies = [
     "filelock>=3.16",
 ]
 
+[project.scripts]
+diodemcp = "diodemcp.cli:main"
+
 [dependency-groups]
 dev = [
     "pytest>=8.0",

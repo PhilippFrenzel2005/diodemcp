@@ -91,7 +91,7 @@ def test_pyproject_dependencies_and_constraints() -> None:
     assert project["name"] == "diodemcp"
     assert project["license"] == "Apache-2.0"
     assert project["requires-python"] == ">=3.11,<3.14"
-    assert "scripts" not in project
+    assert project.get("scripts") == {"diodemcp": "diodemcp.cli:main"}
 
     deps_joined = " ".join(project["dependencies"]).lower()
     for required in ("numpy", "onnxruntime", "tokenizers", "httpx", "pydantic", "typer", "filelock"):
