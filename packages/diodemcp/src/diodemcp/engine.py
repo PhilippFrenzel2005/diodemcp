@@ -89,6 +89,8 @@ from diodemcp.transport import (
 from diodemcp.types import CandidateCall, CapabilityFlag, DecisionScores, RiskBand, TaintSpan
 
 DEFAULT_APPROVAL_TTL_SECONDS: float = 120.0
+MAX_APPROVAL_TTL_SECONDS: float = 600.0
+TRUST_SHAPE_CEILING: float = 0.85
 MAX_STORED_INCIDENTS: int = 256
 MAX_SEEN_NONCES: int = 4096
 MAX_CONCURRENT_CONNECTIONS: int = 64
@@ -326,6 +328,27 @@ def _merge_floor_scores(base: DecisionScores, floor: DecisionScores) -> Decision
     )
 
 
+def _resolve_leaked_span(
+    scores: DecisionScores,
+    priv_list: Sequence[TaintSpan],
+    fallback_priv_list: Sequence[TaintSpan] | None = None,
+) -> TaintSpan | None:
+    """Resolve attributed private `TaintSpan` by `attributed_span_id` first, falling back to `attributed_span_idx`."""
+    if scores.attributed_span_id:
+        for sp in priv_list:
+            if sp.span_id == scores.attributed_span_id:
+                return sp
+        if fallback_priv_list is not None:
+            for sp in fallback_priv_list:
+                if sp.span_id == scores.attributed_span_id:
+                    return sp
+    if scores.attributed_span_idx is not None and 0 <= scores.attributed_span_idx < len(
+        priv_list
+    ):
+        return priv_list[scores.attributed_span_idx]
+    return None
+
+
 def _normalize_client_workspace(workspace_root: Path | str | None) -> str:
     if workspace_root is None:
         return os.path.realpath(os.getcwd())
@@ -488,26 +511,30 @@ class DiodeEngineServer:
             return False
         return True
 
-    def _is_incident_protected_from_eviction(
+    def _incident_eviction_protection_tier(
         self,
         inc_id: str,
         inc: Mapping[str, Any],
         now_wall: float,
         now_mono: float,
-    ) -> bool:
+    ) -> int:
+        """Return protection tier: 0 = ordinary (evict first), 1 = pending popup, 2 = unexpired admin approval."""
         if inc.get("consumed", False):
-            return False
+            return 0
         if self._is_approval_unexpired(inc_id, inc, now_wall, now_mono):
-            return True
-        if inc.get("client_supports_popup", False) and inc.get("elicit_resolved_choice") is None:
+            return 2
+        if (
+            inc.get("client_supports_popup", False)
+            and inc.get("elicit_resolved_choice") is None
+        ):
             created = inc.get("created_at", 0.0)
             try:
                 age = now_wall - float(created)
             except (TypeError, ValueError):
                 age = PENDING_POPUP_RETENTION_SECONDS + 1.0
             if 0.0 <= age <= PENDING_POPUP_RETENTION_SECONDS:
-                return True
-        return False
+                return 1
+        return 0
 
     def _evict_excess_incidents(self) -> None:
         if len(self._incident_order) <= MAX_STORED_INCIDENTS:
@@ -516,12 +543,18 @@ class DiodeEngineServer:
         now_mono = time.monotonic()
         while len(self._incident_order) > MAX_STORED_INCIDENTS:
             victim_idx: int | None = None
-            for idx, cand_id in enumerate(self._incident_order):
-                cand = self._incidents.get(cand_id)
-                if cand is None or not self._is_incident_protected_from_eviction(
-                    cand_id, cand, now_wall, now_mono
-                ):
-                    victim_idx = idx
+            for target_tier in (0, 1, 2):
+                for idx, cand_id in enumerate(self._incident_order):
+                    cand = self._incidents.get(cand_id)
+                    if cand is None or (
+                        self._incident_eviction_protection_tier(
+                            cand_id, cand, now_wall, now_mono
+                        )
+                        == target_tier
+                    ):
+                        victim_idx = idx
+                        break
+                if victim_idx is not None:
                     break
             if victim_idx is None:
                 victim_idx = 0
@@ -899,6 +932,10 @@ class DiodeEngineServer:
             if not _HEX64_RE.fullmatch(cand_binding):
                 raise ValueError("popup_binding_sha256 must be a valid 64-char hex SHA-256")
             norm_binding = cand_binding
+        if client_supports_popup and norm_binding is None:
+            raise ValueError(
+                "popup_binding_sha256 is required when client_supports_popup=True"
+            )
 
         call = CandidateCall(
             server=server,
@@ -935,7 +972,7 @@ class DiodeEngineServer:
             )
 
             snap = ledger.snapshot()
-            priv_list = list(snap.private_spans)
+            phase1_priv_list = list(snap.private_spans)
             untrust_list = list(snap.untrusted_spans)
 
             # Step 2: Single-use out-of-band human approval replay check
@@ -973,12 +1010,7 @@ class DiodeEngineServer:
                         {"p_enc": 0.0, "p_sem": 0.0, "p_hijack": 0.0},
                     )
                 )
-                leaked_sp = (
-                    priv_list[approved_scores.attributed_span_idx]
-                    if approved_scores.attributed_span_idx is not None
-                    and 0 <= approved_scores.attributed_span_idx < len(priv_list)
-                    else None
-                )
+                leaked_sp = _resolve_leaked_span(approved_scores, phase1_priv_list)
                 self._commit_allowed_call_effects(registry, ledger, req_flags, call)
                 self._write_audit_decision(
                     decision="ALLOW_APPROVED",
@@ -988,7 +1020,7 @@ class DiodeEngineServer:
                     call=call,
                     scores=approved_scores,
                     leaked_span=leaked_sp,
-                    private_spans=priv_list,
+                    private_spans=phase1_priv_list,
                     client_kind=client_kind,
                     is_self_tamper=is_self_tamper,
                     incident_id=matched_approval["incident_id"],
@@ -1008,7 +1040,7 @@ class DiodeEngineServer:
             if not is_self_tamper:
                 has_untrusted_any = bool(untrust_list) or any(
                     s.dual_trust or bool(s.flags & CapabilityFlag.READS_UNTRUSTED)
-                    for s in priv_list
+                    for s in phase1_priv_list
                 )
                 can_fast_path = ledger.should_fast_path_allow(
                     req_flags,
@@ -1027,7 +1059,7 @@ class DiodeEngineServer:
                         call=call,
                         scores=fast_scores,
                         leaked_span=None,
-                        private_spans=priv_list,
+                        private_spans=phase1_priv_list,
                         client_kind=client_kind,
                         is_self_tamper=False,
                     )
@@ -1046,7 +1078,7 @@ class DiodeEngineServer:
         if is_self_tamper:
             t0 = self._tier0.evaluate(
                 intent=snap.intent,
-                private_spans=priv_list,
+                private_spans=phase1_priv_list,
                 untrusted_spans=untrust_list,
                 call=call,
             )
@@ -1059,25 +1091,41 @@ class DiodeEngineServer:
                 attributed_span_id=t0.attributed_span_id,
                 attributed_arg_key=first_arg,
             )
+            tier0_floor_max = 1.0
         else:
             if isinstance(self._predictor, OrtJevPredictor):
                 scores = self._predictor.evaluate_snapshot(snap, call)
-            else:
-                scores = self._predictor.evaluate(
+                t0_floor = self._predictor.tier0.evaluate(
                     intent=snap.intent,
-                    private_spans=priv_list,
-                    untrusted_spans=untrust_list,
-                    call=call,
-                )
-            # Critical 1: ALWAYS re-run Tier0 floor so raw secrets >= critical_min always escalate
-            if self._predictor is not self._tier0:
-                t0_floor = self._tier0.evaluate(
-                    intent=snap.intent,
-                    private_spans=priv_list,
+                    private_spans=phase1_priv_list,
                     untrusted_spans=untrust_list,
                     call=call,
                 )
                 scores = _merge_floor_scores(scores, t0_floor)
+                tier0_floor_max = t0_floor.p_max
+            elif self._predictor is self._tier0:
+                scores = self._tier0.evaluate(
+                    intent=snap.intent,
+                    private_spans=phase1_priv_list,
+                    untrusted_spans=untrust_list,
+                    call=call,
+                )
+                tier0_floor_max = scores.p_max
+            else:
+                scores = self._predictor.evaluate(
+                    intent=snap.intent,
+                    private_spans=phase1_priv_list,
+                    untrusted_spans=untrust_list,
+                    call=call,
+                )
+                t0_floor = self._tier0.evaluate(
+                    intent=snap.intent,
+                    private_spans=phase1_priv_list,
+                    untrusted_spans=untrust_list,
+                    call=call,
+                )
+                scores = _merge_floor_scores(scores, t0_floor)
+                tier0_floor_max = t0_floor.p_max
 
         # Phase 3 (re-acquire _state_lock): live rolling/tainted-write floors, trust_shape, and routing
         with self._state_lock:
@@ -1093,6 +1141,7 @@ class DiodeEngineServer:
                     )
                     if rolling_floor is not None:
                         scores = _merge_floor_scores(scores, rolling_floor)
+                        tier0_floor_max = max(tier0_floor_max, rolling_floor.p_max)
 
                 if not is_pure_local_rw and ledger.touches_tainted_local_write(call):
                     write_floor = self._check_tainted_local_write_floor(
@@ -1100,32 +1149,34 @@ class DiodeEngineServer:
                     )
                     if write_floor is not None:
                         scores = _merge_floor_scores(scores, write_floor)
+                        tier0_floor_max = max(tier0_floor_max, write_floor.p_max)
 
             is_critical_hijack = bool(
                 not is_self_tamper and scores.p_hijack >= critical_min
             )
             p_max = scores.p_max
 
-            leaked_span: TaintSpan | None = None
-            if scores.attributed_span_idx is not None and 0 <= scores.attributed_span_idx < len(
-                priv_list
-            ):
-                leaked_span = priv_list[scores.attributed_span_idx]
+            leaked_span = _resolve_leaked_span(
+                scores, priv_list, fallback_priv_list=phase1_priv_list
+            )
 
             has_high_secret = bool(
                 leaked_span is not None and (leaked_span.flags & CapabilityFlag.HIGH_SECRET)
             )
 
-            # Step 3: Session trust_tool_shape check (strictly non-CRITICAL WARN, non-self-tamper, non-HIGH_SECRET)
+            # Step 3: Session trust_tool_shape check (strictly non-CRITICAL WARN, Tier0 < 0.85, p_max < min(critical_min, 0.85))
             flat_arg_keys = frozenset(
                 flatten_call_arguments(call.arguments, max_args=None).keys()
             )
-            if (
+            trust_shape_ceiling = min(critical_min, TRUST_SHAPE_CEILING)
+            can_trust_shape = (
                 not is_self_tamper
                 and not is_critical_hijack
                 and not has_high_secret
-                and warn_min <= p_max < critical_min
-            ):
+                and tier0_floor_max < TRUST_SHAPE_CEILING
+                and warn_min <= p_max < trust_shape_ceiling
+            )
+            if can_trust_shape:
                 is_admin_trusted = (
                     ws_key,
                     norm_srv,
@@ -1221,11 +1272,18 @@ class DiodeEngineServer:
                 if client_supports_popup:
                     action_out = "elicit"
                     decision_tag = "ELICIT"
-                    choices = (
-                        ["allow_once", "redact", "block", "trust_shape"]
-                        if can_redact
-                        else ["allow_once", "block", "trust_shape"]
-                    )
+                    if can_trust_shape:
+                        choices = (
+                            ["allow_once", "redact", "block", "trust_shape"]
+                            if can_redact
+                            else ["allow_once", "block", "trust_shape"]
+                        )
+                    else:
+                        choices = (
+                            ["allow_once", "redact", "block"]
+                            if can_redact
+                            else ["allow_once", "block"]
+                        )
                     default_choice = "redact" if (p_max < 0.50 and can_redact) else "block"
                     banner = f"⚠️ DiodeMCP WARN ({p_max:.2f}): {reason}"
                 elif client_kind == "ide_hook" and not bypass_ide_prompt:
@@ -1283,6 +1341,7 @@ class DiodeEngineServer:
                 "band": band_str,
                 "action_emitted": action_out,
                 "p_max": round(p_max, 6),
+                "tier0_floor_max": round(tier0_floor_max, 6),
                 "scores": scores.model_dump(mode="json"),
                 "is_self_tamper": is_self_tamper,
                 "is_critical_hijack": is_critical_hijack,
@@ -1504,14 +1563,20 @@ class DiodeEngineServer:
                 raise ValueError(f"Incident {incident_id!r} was already resolved")
 
             if choice == "trust_shape":
+                _warn_min, critical_min = self._thresholds()
+                trust_shape_ceiling = min(critical_min, TRUST_SHAPE_CEILING)
+                inc_p_max = float(inc.get("p_max", 1.0))
+                inc_t0_max = float(inc.get("tier0_floor_max", inc_p_max))
                 if (
                     inc.get("band") != RiskBand.WARN.value
                     or inc.get("is_self_tamper", False)
                     or inc.get("is_critical_hijack", False)
                     or inc.get("has_high_secret", False)
+                    or inc_t0_max >= TRUST_SHAPE_CEILING
+                    or inc_p_max >= trust_shape_ceiling
                 ):
                     raise ValueError(
-                        "trust_shape is strictly restricted to non-CRITICAL WARN incidents"
+                        "trust_shape is strictly restricted to non-CRITICAL WARN incidents with Tier0/p_max < 0.85"
                     )
                 norm_srv, norm_tool = _normalize_server_and_tool(
                     str(inc["server"]), str(inc["tool"])
@@ -1575,12 +1640,25 @@ class DiodeEngineServer:
         self,
         incident_id: str,
         *,
+        ttl_seconds: float | None = None,
         admin_secret: str | None = None,
         _admin_verified: bool = False,
     ) -> dict[str, Any]:
-        """Authorize exact `(workspace_key, server, tool, canonical_args_sha256)` single-use replay for 120s (`C4`)."""
+        """Authorize exact `(workspace_key, server, tool, canonical_args_sha256)` single-use replay (`<= 600s` TTL, `C4`)."""
         if not _admin_verified:
             self._require_admin_secret_direct(admin_secret, "approve_incident")
+
+        if ttl_seconds is None:
+            eff_ttl = min(self._approval_ttl_s, MAX_APPROVAL_TTL_SECONDS)
+        else:
+            if isinstance(ttl_seconds, bool) or not isinstance(
+                ttl_seconds, (int, float)
+            ):
+                raise ValueError("ttl_seconds must be a positive finite number")
+            raw_ttl = float(ttl_seconds)
+            if not math.isfinite(raw_ttl) or raw_ttl <= 0.0:
+                raise ValueError("ttl_seconds must be a positive finite number")
+            eff_ttl = min(raw_ttl, MAX_APPROVAL_TTL_SECONDS)
 
         with self._state_lock:
             inc = self._incidents.get(incident_id)
@@ -1595,8 +1673,8 @@ class DiodeEngineServer:
             if inc.get("elicit_resolved_choice") is not None:
                 raise ValueError(f"Incident {incident_id!r} was already resolved")
 
-            expires_at = time.time() + self._approval_ttl_s
-            mono_deadline = time.monotonic() + self._approval_ttl_s
+            expires_at = time.time() + eff_ttl
+            mono_deadline = time.monotonic() + eff_ttl
             inc["approved_until"] = expires_at
             self._approval_monotonic_deadlines[incident_id] = mono_deadline
             self._persist_incidents()
@@ -1671,6 +1749,7 @@ class DiodeEngineServer:
         self,
         *,
         limit: int = 50,
+        workspace_root: Path | str | None = None,
         admin_secret: str | None = None,
         _admin_verified: bool = False,
     ) -> dict[str, Any]:
@@ -1678,12 +1757,21 @@ class DiodeEngineServer:
         if not _admin_verified:
             self._require_admin_secret_direct(admin_secret, "list_incidents")
 
+        filter_ws_key: str | None = None
+        if workspace_root is not None:
+            _, filter_ws_key = self._resolve_workspace(workspace_root)
+
         bounded = max(1, min(int(limit), MAX_STORED_INCIDENTS))
         with self._state_lock:
             out: list[dict[str, Any]] = []
             for inc_id in reversed(self._incident_order):
                 inc = self._incidents.get(inc_id)
                 if inc is None:
+                    continue
+                if (
+                    filter_ws_key is not None
+                    and inc.get("workspace_key") != filter_ws_key
+                ):
                     continue
                 out.append(
                     {
@@ -1777,14 +1865,22 @@ class DiodeEngineServer:
             raw_limit = params.get("limit", 50)
             if isinstance(raw_limit, bool) or not isinstance(raw_limit, int):
                 raise ValueError("limit must be an integer")
-            return self.list_incidents(limit=raw_limit, _admin_verified=True)
+            return self.list_incidents(
+                limit=raw_limit,
+                workspace_root=params.get("workspace_root"),
+                _admin_verified=True,
+            )
         if method in ("approve_incident", "approve_allow_token"):
             if not admin_verified:
                 raise TransportPermissionError(
                     f"Privileged RPC {method!r} requires admin_secret"
                 )
             inc_id = str(params.get("incident_id") or params.get("allow_token") or "")
-            return self.approve_incident(inc_id, _admin_verified=True)
+            return self.approve_incident(
+                inc_id,
+                ttl_seconds=params.get("ttl_seconds"),
+                _admin_verified=True,
+            )
         if method == "trust_tool_shape":
             if not admin_verified:
                 raise TransportPermissionError(
@@ -2480,14 +2576,13 @@ class EngineClient:
         client_kind: Literal["mcp_shim", "ide_hook", "headless"] = "headless",
         permission_mode: str | None = None,
         config_path: Path | str | None = None,
-        popup_binding_sha256: str | None = None,
+        popup_binding_sha256: str | None = _UNSET_SECRET,
     ) -> dict[str, Any]:
         del config_path  # Ignored: server loads policy exclusively from state_dir/config.toml
-        eff_binding = (
-            (popup_binding_sha256 or self._popup_binding_sha256)
-            if client_supports_popup
-            else popup_binding_sha256
-        )
+        if popup_binding_sha256 is _UNSET_SECRET:
+            eff_binding = self._popup_binding_sha256 if client_supports_popup else None
+        else:
+            eff_binding = popup_binding_sha256
         params: dict[str, Any] = {
             "workspace_root": _normalize_client_workspace(workspace_root),
             "server": server,
@@ -2511,14 +2606,13 @@ class EngineClient:
         client_kind: Literal["mcp_shim", "ide_hook", "headless"] = "headless",
         permission_mode: str | None = None,
         config_path: Path | str | None = None,
-        popup_binding_sha256: str | None = None,
+        popup_binding_sha256: str | None = _UNSET_SECRET,
     ) -> dict[str, Any]:
         del config_path
-        eff_binding = (
-            (popup_binding_sha256 or self._popup_binding_sha256)
-            if client_supports_popup
-            else popup_binding_sha256
-        )
+        if popup_binding_sha256 is _UNSET_SECRET:
+            eff_binding = self._popup_binding_sha256 if client_supports_popup else None
+        else:
+            eff_binding = popup_binding_sha256
         params: dict[str, Any] = {
             "workspace_root": _normalize_client_workspace(workspace_root),
             "server": server,
@@ -2673,11 +2767,15 @@ class EngineClient:
         self,
         *,
         limit: int = 50,
+        workspace_root: Path | str | None = None,
         admin_secret: str | None = None,
     ) -> list[dict[str, Any]]:
+        rpc_params: dict[str, Any] = {"limit": int(limit)}
+        if workspace_root is not None:
+            rpc_params["workspace_root"] = _normalize_client_workspace(workspace_root)
         res = self._call(
             "list_incidents",
-            {"limit": int(limit)},
+            rpc_params,
             admin_secret=admin_secret,
         )
         items = res.get("incidents", [])
@@ -2687,11 +2785,15 @@ class EngineClient:
         self,
         *,
         limit: int = 50,
+        workspace_root: Path | str | None = None,
         admin_secret: str | None = None,
     ) -> list[dict[str, Any]]:
+        rpc_params: dict[str, Any] = {"limit": int(limit)}
+        if workspace_root is not None:
+            rpc_params["workspace_root"] = _normalize_client_workspace(workspace_root)
         res = await self._acall(
             "list_incidents",
-            {"limit": int(limit)},
+            rpc_params,
             admin_secret=admin_secret,
         )
         items = res.get("incidents", [])
@@ -2701,11 +2803,22 @@ class EngineClient:
         self,
         incident_id: str,
         *,
+        ttl_seconds: float | None = None,
         admin_secret: str | None = None,
     ) -> dict[str, Any]:
+        rpc_params: dict[str, Any] = {"incident_id": incident_id}
+        if ttl_seconds is not None:
+            if isinstance(ttl_seconds, bool) or not isinstance(
+                ttl_seconds, (int, float)
+            ):
+                raise ValueError("ttl_seconds must be a positive finite number")
+            raw_ttl = float(ttl_seconds)
+            if not math.isfinite(raw_ttl) or raw_ttl <= 0.0:
+                raise ValueError("ttl_seconds must be a positive finite number")
+            rpc_params["ttl_seconds"] = raw_ttl
         return self._call(
             "approve_incident",
-            {"incident_id": incident_id},
+            rpc_params,
             admin_secret=admin_secret,
         )
 
@@ -2713,11 +2826,22 @@ class EngineClient:
         self,
         incident_id: str,
         *,
+        ttl_seconds: float | None = None,
         admin_secret: str | None = None,
     ) -> dict[str, Any]:
+        rpc_params: dict[str, Any] = {"incident_id": incident_id}
+        if ttl_seconds is not None:
+            if isinstance(ttl_seconds, bool) or not isinstance(
+                ttl_seconds, (int, float)
+            ):
+                raise ValueError("ttl_seconds must be a positive finite number")
+            raw_ttl = float(ttl_seconds)
+            if not math.isfinite(raw_ttl) or raw_ttl <= 0.0:
+                raise ValueError("ttl_seconds must be a positive finite number")
+            rpc_params["ttl_seconds"] = raw_ttl
         return await self._acall(
             "approve_incident",
-            {"incident_id": incident_id},
+            rpc_params,
             admin_secret=admin_secret,
         )
 
@@ -2828,7 +2952,7 @@ class AsyncEngineClient:
         client_kind: Literal["mcp_shim", "ide_hook", "headless"] = "headless",
         permission_mode: str | None = None,
         config_path: Path | str | None = None,
-        popup_binding_sha256: str | None = None,
+        popup_binding_sha256: str | None = _UNSET_SECRET,
     ) -> dict[str, Any]:
         return await self._sync.aevaluate_call(
             workspace_root=workspace_root,
@@ -2899,17 +3023,27 @@ class AsyncEngineClient:
         self,
         *,
         limit: int = 50,
+        workspace_root: Path | str | None = None,
         admin_secret: str | None = None,
     ) -> list[dict[str, Any]]:
-        return await self._sync.alist_incidents(limit=limit, admin_secret=admin_secret)
+        return await self._sync.alist_incidents(
+            limit=limit,
+            workspace_root=workspace_root,
+            admin_secret=admin_secret,
+        )
 
     async def approve_incident(
         self,
         incident_id: str,
         *,
+        ttl_seconds: float | None = None,
         admin_secret: str | None = None,
     ) -> dict[str, Any]:
-        return await self._sync.aapprove_incident(incident_id, admin_secret=admin_secret)
+        return await self._sync.aapprove_incident(
+            incident_id,
+            ttl_seconds=ttl_seconds,
+            admin_secret=admin_secret,
+        )
 
     approve_allow_token = approve_incident
 

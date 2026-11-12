@@ -800,6 +800,11 @@ def _rpc_once_sync(
                 sock.sendall(hello_wire)
                 raw_hello = _read_bounded_line_sync(sock)
             except (TimeoutError, socket.timeout) as exc:
+                addr_pid = int(addr.get("pid", 0) or 0)
+                if addr_pid <= 0 or not is_pid_alive(addr_pid):
+                    raise _StaleServerHelloError(
+                        "TCP daemon hello timed out on dead daemon PID"
+                    ) from exc
                 raise TransportError("TCP daemon hello timed out") from exc
             except (ConnectionResetError, BrokenPipeError) as exc:
                 raise _DeadEndpointError(sanitize_error_message(exc)) from exc
@@ -917,6 +922,11 @@ async def _rpc_once_async(
             except (asyncio.LimitOverrunError, ValueError) as exc:
                 raise _StaleServerHelloError("Oversized TCP server hello line") from exc
             except (TimeoutError, asyncio.TimeoutError) as exc:
+                addr_pid = int(addr.get("pid", 0) or 0)
+                if addr_pid <= 0 or not is_pid_alive(addr_pid):
+                    raise _StaleServerHelloError(
+                        "TCP daemon hello timed out on dead daemon PID"
+                    ) from exc
                 raise TransportError("TCP daemon hello timed out") from exc
             except (ConnectionResetError, BrokenPipeError) as exc:
                 raise _DeadEndpointError(sanitize_error_message(exc)) from exc
