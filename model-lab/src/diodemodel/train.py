@@ -101,7 +101,8 @@ class JevTrainerConfig:
     hard_negative_weight: float = HARD_NEGATIVE_WEIGHT
     fp_threshold: float = 0.5
     fn_threshold: float = 0.5
-    pad_token_id: int = 0
+    pad_token_id: int | None = None
+    save_every_steps: int | None = 500
     use_bf16: bool = False
     gradient_checkpointing: bool = False
     seed: int = 42
@@ -329,13 +330,21 @@ def align_row_to_bucket(
         a_pos_out[ARG_SLOTS - 1] = none_pos_out
         a_val_out[ARG_SLOTS - 1] = True
     else:
-        # Clamp long sequence into bucket_len while preserving [SEP], <|none|>, and 5 query tokens at the end.
+        # Clamp long sequence into bucket_len while preserving [SEP], <|none|>, and 5 query tokens at the end,
+        # and preserving the closing [SEP] (seg_id == 1) of <|priv|> when clamping cuts inside seg_ids in {1, 2}.
         was_truncated = True
         prefix_len = bucket_len - 7
         sep_idx = min(max(0, orig_none_pos - 1), len(input_ids) - 1)
         none_idx = min(max(0, orig_none_pos), len(input_ids) - 1)
         q_indices = [min(max(0, p), len(input_ids) - 1) for p in q_pos]
         tail_indices = [sep_idx, none_idx, *q_indices]
+
+        orig_priv_indices = [
+            i
+            for i in range(min(unpadded_len, len(token_roles)))
+            if token_roles[i] == ROLE_STATE and seg_ids[i] in (1, 2)
+        ]
+        orig_priv_sep_idx = max(orig_priv_indices) if orig_priv_indices else -1
 
         ids_out = input_ids[:prefix_len] + [input_ids[idx] for idx in tail_indices]
         segs_out = seg_ids[:prefix_len] + [seg_ids[idx] for idx in tail_indices]
@@ -352,10 +361,31 @@ def align_row_to_bucket(
             segs_out[qp] = CANONICAL_SEGMENT_IDS["DECISION_QUERY"]
             roles_out[qp] = ROLE_QUERY
 
+        surviving_priv = [
+            i for i in range(prefix_len) if roles_out[i] == ROLE_STATE and segs_out[i] in (1, 2)
+        ]
+        if surviving_priv and orig_priv_sep_idx >= prefix_len:
+            priv_sep_out = surviving_priv[-1]
+            sep_tok_val = (
+                input_ids[orig_priv_sep_idx]
+                if 0 <= orig_priv_sep_idx < len(input_ids)
+                else input_ids[sep_idx]
+            )
+            ids_out[priv_sep_out] = sep_tok_val
+            segs_out[priv_sep_out] = CANONICAL_SEGMENT_IDS["PRIVATE_DATA"]
+            roles_out[priv_sep_out] = ROLE_STATE
+            priv_pchunk_limit = priv_sep_out
+            arg_limit = priv_sep_out if priv_sep_out == prefix_len - 1 else prefix_len
+        else:
+            priv_pchunk_limit = (
+                min(prefix_len, orig_priv_sep_idx) if orig_priv_sep_idx >= 0 else prefix_len
+            )
+            arg_limit = prefix_len
+
         p_pos_out = [none_pos_out] * SRC_SLOTS
         p_val_out = [False] * SRC_SLOTS
         for i in range(SRC_SLOTS - 1):
-            if p_val[i] and 0 <= p_pos[i] < prefix_len:
+            if p_val[i] and 0 <= p_pos[i] < priv_pchunk_limit:
                 p_pos_out[i] = int(p_pos[i])
                 p_val_out[i] = True
         p_pos_out[SRC_SLOTS - 1] = none_pos_out
@@ -364,32 +394,22 @@ def align_row_to_bucket(
         a_pos_out = [none_pos_out] * ARG_SLOTS
         a_val_out = [False] * ARG_SLOTS
         for j in range(ARG_SLOTS - 1):
-            if a_val[j] and 0 <= a_pos[j] < prefix_len:
+            if a_val[j] and 0 <= a_pos[j] < arg_limit:
                 a_pos_out[j] = int(a_pos[j])
                 a_val_out[j] = True
         a_pos_out[ARG_SLOTS - 1] = none_pos_out
         a_val_out[ARG_SLOTS - 1] = True
         unpadded_len = bucket_len
 
-    # Synchronise pointer targets and binary labels if truncation invalidated an attributed slot.
+    # Preserve binary labels y_enc, y_sem, y_hijack intact; if an attributed candidate pointer slot
+    # was evicted by clamping (or is invalid), map it to DEFAULT_IGNORE_INDEX (-100) so pointer CE
+    # ignores that row without falsely supervising <|none|> (32 / 16) on an attack row.
     if src_target != DEFAULT_IGNORE_INDEX:
         if not (0 <= src_target < SRC_SLOTS and p_val_out[src_target]):
-            src_target = SRC_SLOTS - 1
-            y_enc = 0.0
-            y_sem = 0.0
+            src_target = DEFAULT_IGNORE_INDEX
     if arg_target != DEFAULT_IGNORE_INDEX:
         if not (0 <= arg_target < ARG_SLOTS and a_val_out[arg_target]):
-            arg_target = ARG_SLOTS - 1
-            y_enc = 0.0
-            y_sem = 0.0
-            y_hijack = 0.0
-            if src_target != DEFAULT_IGNORE_INDEX:
-                src_target = SRC_SLOTS - 1
-
-    if max(y_enc, y_sem) < 0.5 and src_target != DEFAULT_IGNORE_INDEX:
-        src_target = SRC_SLOTS - 1
-    if max(y_enc, y_sem, y_hijack) < 0.5 and arg_target != DEFAULT_IGNORE_INDEX:
-        arg_target = ARG_SLOTS - 1
+            arg_target = DEFAULT_IGNORE_INDEX
 
     return {
         **d,
@@ -846,6 +866,26 @@ def _instantiate_model_from_checkpoint_payload(
     return model.to(torch.device(device)).eval()
 
 
+def _select_batch_bucket(
+    batch_rows: Sequence[Mapping[str, Any] | PackedJevRow],
+    candidate_buckets: Sequence[int] = CURRICULUM_BUCKETS,
+) -> int:
+    """Pick the smallest bucket in ``sorted(candidate_buckets)`` >= ``max(unpadded_length)`` in batch."""
+    sorted_b = sorted(int(b) for b in candidate_buckets) if candidate_buckets else list(CURRICULUM_BUCKETS)
+    max_unpadded = 0
+    for r in batch_rows:
+        if isinstance(r, PackedJevRow):
+            u_len = int(r.unpadded_length)
+        else:
+            u_len = int(r.get("unpadded_length", len(r.get("input_ids", ()))))
+        if u_len > max_unpadded:
+            max_unpadded = u_len
+    for b in sorted_b:
+        if b >= max_unpadded:
+            return b
+    return sorted_b[-1]
+
+
 # ---------------------------------------------------------------------------------------------
 # Training loop (single bucket / epoch & full 2-stage length curriculum)
 # ---------------------------------------------------------------------------------------------
@@ -863,6 +903,9 @@ def train_one_epoch(
     start_batch_idx: int = 0,
     max_steps: int | None = None,
     status_log_path: Path | str | None = None,
+    unit_idx: int = 0,
+    checkpoint_dir: Path | str | None = None,
+    best_val_metric: float = float("inf"),
 ) -> dict[str, Any]:
     """Execute one curriculum bucket pass in either Stage 1 or Stage 2."""
     cfg = config or JevTrainerConfig()
@@ -877,10 +920,18 @@ def train_one_epoch(
     if cfg.max_steps_per_bucket is not None:
         total_batches = min(total_batches, int(cfg.max_steps_per_bucket) * grad_accum)
 
+    eff_ckpt_dir = (
+        Path(checkpoint_dir)
+        if checkpoint_dir is not None
+        else (Path(cfg.checkpoint_dir) if cfg.checkpoint_dir is not None else None)
+    )
+    save_every = int(cfg.save_every_steps) if (cfg.save_every_steps is not None and cfg.save_every_steps > 0) else None
+
     losses: list[float] = []
     steps_run = 0
     cur_step = int(global_step)
     last_batch_idx = start_batch_idx - 1
+    saved_at_step: int | None = None
 
     optimizer.zero_grad(set_to_none=True)
     for b_idx in range(start_batch_idx, total_batches):
@@ -961,6 +1012,25 @@ def train_one_epoch(
                 arg_pointer_ce=float(loss_dict["arg_pointer_ce"].detach().item()),
                 hard_negative_fraction=hard_neg_frac,
             )
+            if eff_ckpt_dir is not None and save_every is not None and (cur_step % save_every == 0):
+                bucket_done_now = b_idx >= total_batches - 1
+                extra_periodic = {
+                    "next_unit_idx": (unit_idx + 1) if bucket_done_now else unit_idx,
+                    "next_batch_idx": 0 if bucket_done_now else (b_idx + 1),
+                }
+                save_atomic_checkpoint(
+                    eff_ckpt_dir / "checkpoint_latest.pt",
+                    model=model,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                    epoch=epoch,
+                    stage=stage,
+                    bucket_len=bucket_len,
+                    global_step=cur_step,
+                    best_val_metric=best_val_metric,
+                    extra_state=extra_periodic,
+                )
+                saved_at_step = cur_step
         last_batch_idx = b_idx
 
     completed_bucket = (last_batch_idx >= total_batches - 1) or (total_batches == 0)
@@ -970,6 +1040,7 @@ def train_one_epoch(
         "mean_loss": float(np.mean(losses)) if losses else 0.0,
         "last_batch_idx": last_batch_idx,
         "completed_bucket": completed_bucket,
+        "saved_at_step": saved_at_step,
     }
 
 
@@ -1037,6 +1108,7 @@ def run_curriculum_training(
     start_unit_idx = 0
     start_batch_in_unit = 0
     resumed_from_step = 0
+    calibration_report: dict[str, Any] | None = None
 
     resume_path: Path | None = None
     if resume_from is not None:
@@ -1059,6 +1131,7 @@ def run_curriculum_training(
         best_val_metric = float(ckpt.get("best_val_metric", float("inf")))
         start_unit_idx = int(ckpt.get("next_unit_idx", 0))
         start_batch_in_unit = int(ckpt.get("next_batch_idx", 0))
+        calibration_report = ckpt.get("calibration_report", None)
         log_train_event(
             status_log,
             "curriculum_resumed",
@@ -1093,6 +1166,9 @@ def run_curriculum_training(
             start_batch_idx=b_start,
             max_steps=cfg.max_steps,
             status_log_path=status_log,
+            unit_idx=unit_idx,
+            checkpoint_dir=ckpt_dir,
+            best_val_metric=best_val_metric,
         )
         global_step = int(res["global_step"])
         steps_executed_this_run += int(res["steps_run"])
@@ -1115,19 +1191,21 @@ def run_curriculum_training(
             extra = {
                 "next_unit_idx": next_unit_idx,
                 "next_batch_idx": next_batch_idx,
+                "calibration_report": calibration_report,
             }
-            save_atomic_checkpoint(
-                latest_file,
-                model=model,
-                optimizer=optimizer,
-                scheduler=scheduler,
-                epoch=epoch,
-                stage=stage,
-                bucket_len=bucket_len,
-                global_step=global_step,
-                best_val_metric=best_val_metric,
-                extra_state=extra,
-            )
+            if res.get("saved_at_step") != global_step:
+                save_atomic_checkpoint(
+                    latest_file,
+                    model=model,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                    epoch=epoch,
+                    stage=stage,
+                    bucket_len=bucket_len,
+                    global_step=global_step,
+                    best_val_metric=best_val_metric,
+                    extra_state=extra,
+                )
             save_atomic_checkpoint(
                 stage_bucket_file,
                 model=model,
@@ -1142,16 +1220,16 @@ def run_curriculum_training(
             )
 
     # Post-hoc temperature scaling on unweighted val_rows when finishing Stage 2
-    calibration_report: dict[str, Any] | None = None
-    if loaded_val and (cfg.max_steps is None or global_step >= total_planned_steps):
+    if loaded_val and calibration_report is None and (cfg.max_steps is None or global_step >= total_planned_steps):
         model.eval()
         val_logits_list: list[torch.Tensor] = []
         val_targets_list: list[torch.Tensor] = []
-        calib_bucket = cfg.curriculum_buckets[0] if cfg.curriculum_buckets else 512
         with torch.no_grad():
             for i in range(0, len(loaded_val), batch_size):
+                vb_slice = loaded_val[i : i + batch_size]
+                calib_bucket = _select_batch_bucket(vb_slice, cfg.curriculum_buckets)
                 vb = collate_jev_batch(
-                    loaded_val[i : i + batch_size],
+                    vb_slice,
                     bucket_len=calib_bucket,
                     pad_token_id=cfg.pad_token_id,
                     device=dev,
@@ -1174,6 +1252,11 @@ def run_curriculum_training(
         )
         if ckpt_dir is not None and schedule:
             last_stage, last_epoch, last_bucket = schedule[-1]
+            final_extra = {
+                "next_unit_idx": len(schedule),
+                "next_batch_idx": 0,
+                "calibration_report": calibration_report,
+            }
             save_atomic_checkpoint(
                 ckpt_dir / "checkpoint_latest.pt",
                 model=model,
@@ -1184,7 +1267,7 @@ def run_curriculum_training(
                 bucket_len=last_bucket,
                 global_step=global_step,
                 best_val_metric=best_val_metric,
-                extra_state={"next_unit_idx": len(schedule), "next_batch_idx": 0},
+                extra_state=final_extra,
             )
             save_atomic_checkpoint(
                 ckpt_dir / "checkpoint_best.pt",
@@ -1196,7 +1279,7 @@ def run_curriculum_training(
                 bucket_len=last_bucket,
                 global_step=global_step,
                 best_val_metric=best_val_metric,
-                extra_state={"next_unit_idx": len(schedule), "next_batch_idx": 0},
+                extra_state=final_extra,
             )
 
     return {
@@ -1219,7 +1302,7 @@ def evaluate_jev_checkpoint(
     eval_rows: Sequence[Mapping[str, Any] | PackedJevRow] | Path | str,
     *,
     model: _JevModelBase | None = None,
-    bucket_len: int = 512,
+    bucket_len: int | None = None,
     batch_size: int = 16,
     threshold: float = 0.5,
     pad_token_id: int | None = None,
@@ -1256,9 +1339,15 @@ def evaluate_jev_checkpoint(
 
     with torch.no_grad():
         for start in range(0, len(rows), max(1, batch_size)):
+            batch_slice = rows[start : start + max(1, batch_size)]
+            eff_bucket = (
+                int(bucket_len)
+                if bucket_len is not None
+                else _select_batch_bucket(batch_slice, CURRICULUM_BUCKETS)
+            )
             batch = collate_jev_batch(
-                rows[start : start + max(1, batch_size)],
-                bucket_len=bucket_len,
+                batch_slice,
+                bucket_len=eff_bucket,
                 pad_token_id=pad_token_id,
                 device=dev,
             )

@@ -1407,9 +1407,295 @@ def test_parquet_and_in_memory_dataset_batch_loading_and_dynamic_bucket_padding(
     assert len(aligned_512["input_ids"]) == 512
     assert aligned_512["pchunk_valid_mask"][0] is True
     assert aligned_512["pchunk_valid_mask"][1] is False  # evicted by 512 clamp
-    assert aligned_512["src_target"] == 32  # safely remapped to <|none|>
-    assert aligned_512["arg_target"] == 16
-    assert aligned_512["y_enc"] == 0.0
+    assert aligned_512["src_target"] == -100  # evicted candidate slot mapped to ignore_index (-100)
+    assert aligned_512["arg_target"] == -100
+    assert aligned_512["y_enc"] == 1.0  # ground-truth attack label preserved
+
+
+def test_clamped_row_preserves_priv_closing_sep_and_nanojev_causal_span_pooling():
+    from diodemodel.train import align_row_to_bucket, collate_jev_batch
+
+    nano = _tiny_curriculum_nano().eval()
+    sep_token_id = 2
+    # Construct a 700-token row where <|priv|> (seg_ids in {1, 2}) spans positions 4..600
+    # with closing [SEP] at 600, so clamping to 512 cuts directly inside <|priv|>.
+    length = 700
+    none_pos = 690
+    ids = [15] * length
+    segs = [0] * length
+    roles = [ROLE_STATE] * length
+
+    ids[0], segs[0] = 1, CANONICAL_SEGMENT_IDS["TRUSTED_INTENT"]
+    ids[3], segs[3] = sep_token_id, CANONICAL_SEGMENT_IDS["TRUSTED_INTENT"]
+    for pos in range(4, 601):
+        segs[pos] = CANONICAL_SEGMENT_IDS["PRIVATE_DATA"] if pos < 300 else CANONICAL_SEGMENT_IDS["DUAL_TRUST_DATA"]
+    ids[600] = sep_token_id
+    segs[600] = CANONICAL_SEGMENT_IDS["PRIVATE_DATA"]
+
+    for pos in range(601, 640):
+        segs[pos] = CANONICAL_SEGMENT_IDS["UNTRUSTED_DATA"]
+    ids[639] = sep_token_id
+
+    for pos in range(640, none_pos):
+        segs[pos] = CANONICAL_SEGMENT_IDS["CANDIDATE_ACTION"]
+    ids[none_pos - 1] = sep_token_id
+    ids[none_pos] = NONE_ID
+    segs[none_pos] = CANONICAL_SEGMENT_IDS["CANDIDATE_ACTION"]
+
+    qpos = [none_pos + 1 + k for k in range(5)]
+    for k, qp in enumerate(qpos):
+        ids[qp] = QUERY_IDS[k]
+        segs[qp] = CANONICAL_SEGMENT_IDS["DECISION_QUERY"]
+        roles[qp] = ROLE_QUERY
+    for pos in range(none_pos + 6, length):
+        ids[pos] = PAD_ID
+        segs[pos] = 0
+        roles[pos] = ROLE_PAD
+
+    # Chunk 0 at 10..49, Chunk 1 at 50..503 (survives inside 512), Chunk 2 at 520..599 (evicted at 512)
+    ppos = [10, 50, 520] + [none_pos] * 30
+    pval = [True, True, True] + [False] * 29 + [True]
+    apos = [645] + [none_pos] * 16
+    aval = [True] + [False] * 15 + [True]
+
+    raw_row = {
+        "input_ids": ids,
+        "seg_ids": segs,
+        "token_roles": roles,
+        "query_positions": qpos,
+        "pchunk_positions": ppos,
+        "pchunk_valid_mask": pval,
+        "arg_positions": apos,
+        "arg_valid_mask": aval,
+        "none_position": none_pos,
+        "unpadded_length": none_pos + 6,
+        "y_enc": 0.0,
+        "y_sem": 1.0,
+        "y_hijack": 0.0,
+        "src_target": 2,  # points to chunk 2 at 520 -> must become -100 on clamp
+        "arg_target": 0,  # points to arg 0 at 645 -> must become -100 on clamp
+        "threat_category": "T4",
+        "variant_kind": "prog_t4_leak",
+    }
+
+    clamped = align_row_to_bucket(raw_row, 512, pad_token_id=PAD_ID)
+    assert clamped["y_sem"] == 1.0
+    assert clamped["src_target"] == -100
+    assert clamped["arg_target"] == -100
+    assert clamped["pchunk_valid_mask"][0] is True
+    assert clamped["pchunk_valid_mask"][1] is True
+    assert clamped["pchunk_valid_mask"][2] is False
+
+    # Verify the last STATE token with seg_id in {1, 2} is a closing [SEP] (seg_id == 1)
+    priv_indices = [
+        idx
+        for idx, (r, s) in enumerate(zip(clamped["token_roles"], clamped["seg_ids"]))
+        if r == ROLE_STATE and s in (1, 2)
+    ]
+    assert priv_indices, "Expected surviving <|priv|> tokens after clamping"
+    priv_sep_pos = max(priv_indices)
+    assert clamped["seg_ids"][priv_sep_pos] == CANONICAL_SEGMENT_IDS["PRIVATE_DATA"]
+    assert clamped["input_ids"][priv_sep_pos] == sep_token_id
+    assert clamped["pchunk_positions"][1] < priv_sep_pos
+
+    # Perturbing the last surviving content token of chunk 1 (at priv_sep_pos - 1) must change
+    # NanoJev's pooled slot 1 representation (proving sec_sep did not strip it!).
+    batch_base = collate_jev_batch([clamped], bucket_len=512, pad_token_id=PAD_ID)
+    clamped_pert = dict(clamped)
+    clamped_pert["input_ids"] = list(clamped["input_ids"])
+    clamped_pert["input_ids"][priv_sep_pos - 1] = 42
+    batch_pert = collate_jev_batch([clamped_pert], bucket_len=512, pad_token_id=PAD_ID)
+
+    with torch.no_grad():
+        h_base = nano.encode(batch_base["input_ids"], batch_base["seg_ids"], batch_base["token_roles"])
+        src_base, _ = nano.extract_pointer_slot_states(
+            h_base,
+            batch_base["seg_ids"],
+            batch_base["token_roles"],
+            batch_base["pchunk_positions"],
+            batch_base["pchunk_valid_mask"],
+            batch_base["arg_positions"],
+            batch_base["arg_valid_mask"],
+        )
+        h_pert = nano.encode(batch_pert["input_ids"], batch_pert["seg_ids"], batch_pert["token_roles"])
+        src_pert, _ = nano.extract_pointer_slot_states(
+            h_pert,
+            batch_pert["seg_ids"],
+            batch_pert["token_roles"],
+            batch_pert["pchunk_positions"],
+            batch_pert["pchunk_valid_mask"],
+            batch_pert["arg_positions"],
+            batch_pert["arg_valid_mask"],
+        )
+        assert (src_pert[:, 1] - src_base[:, 1]).abs().max().item() > 1e-4
+
+        nl, sl, al = call(nano, batch_base, logits=True)
+        loss_out = compute_jev_loss(
+            nl,
+            sl,
+            al,
+            batch_base["noul_targets"],
+            batch_base["src_target"],
+            batch_base["arg_target"],
+            batch_base["pchunk_valid_mask"],
+            batch_base["arg_valid_mask"],
+        )
+        assert torch.isfinite(loss_out["loss"])
+        assert loss_out["src_pointer_ce"].item() == 0.0
+        assert loss_out["arg_pointer_ce"].item() == 0.0
+
+
+def test_dynamic_val_bucket_selection_and_intra_bucket_periodic_checkpoint_resume(tmp_path):
+    from unittest.mock import patch
+
+    from diodemodel import train as train_mod
+    from diodemodel.train import (
+        JevTrainerConfig,
+        align_row_to_bucket,
+        load_checkpoint,
+        make_synthetic_curriculum_dataset,
+        run_curriculum_training,
+    )
+
+    # 1. Default pad_token_id is None and auto-detects non-zero pad token from ROLE_PAD positions
+    default_cfg = JevTrainerConfig()
+    assert default_cfg.pad_token_id is None
+    assert default_cfg.save_every_steps == 500
+
+    custom_pad_id = 61
+    rows_custom_pad = make_synthetic_curriculum_dataset(
+        4, vocab_size=VOCAB, seed=808, pad_token_id=custom_pad_id
+    )
+    aligned_auto = align_row_to_bucket(rows_custom_pad[0], 512, pad_token_id=None)
+    pad_positions = [i for i, r in enumerate(aligned_auto["token_roles"]) if r == ROLE_PAD]
+    assert pad_positions and all(aligned_auto["input_ids"][i] == custom_pad_id for i in pad_positions)
+
+    # 2. Intra-bucket periodic save_every_steps=1 + mid-bucket preemption resume + dynamic val_calib bucket
+    train_rows = make_synthetic_curriculum_dataset(4, vocab_size=VOCAB, seed=909, pad_token_id=PAD_ID)
+    # Create a validation row with unpadded_length = 700 (> 512) so dynamic val_calib bucket picks 1024
+    val_rows = make_synthetic_curriculum_dataset(2, vocab_size=VOCAB, seed=910, pad_token_id=PAD_ID)
+    long_val = align_row_to_bucket(val_rows[0], 1024, pad_token_id=PAD_ID)
+    # Extend STATE tokens of long_val to unpadded_length = 700
+    for pos in range(4, 694):
+        long_val["input_ids"][pos] = 12
+        long_val["seg_ids"][pos] = CANONICAL_SEGMENT_IDS["PRIVATE_DATA"]
+        long_val["token_roles"][pos] = ROLE_STATE
+    long_val["input_ids"][693] = 2  # closing [SEP] of <|priv|>
+    long_val["input_ids"][694] = 2  # closing [SEP] of <|call|>
+    long_val["seg_ids"][694] = CANONICAL_SEGMENT_IDS["CANDIDATE_ACTION"]
+    long_val["token_roles"][694] = ROLE_STATE
+    long_val["none_position"] = 695
+    long_val["input_ids"][695] = NONE_ID
+    long_val["seg_ids"][695] = CANONICAL_SEGMENT_IDS["CANDIDATE_ACTION"]
+    long_val["token_roles"][695] = ROLE_STATE
+    long_val["query_positions"] = [696, 697, 698, 699, 700]
+    for k, qp in enumerate(long_val["query_positions"]):
+        long_val["input_ids"][qp] = QUERY_IDS[k]
+        long_val["seg_ids"][qp] = CANONICAL_SEGMENT_IDS["DECISION_QUERY"]
+        long_val["token_roles"][qp] = ROLE_QUERY
+    long_val["pchunk_positions"][32] = 695
+    long_val["arg_positions"][16] = 695
+    long_val["unpadded_length"] = 701
+    val_rows[0] = long_val
+
+    # Uninterrupted 2-step run inside a single bucket (4 rows, batch_size=2 -> 2 steps in bucket 512)
+    m_uninterrupted = _tiny_curriculum_modernbert()
+    cfg_unint = JevTrainerConfig(
+        curriculum_buckets=(512, 1024),
+        batch_size=2,
+        learning_rate=5e-4,
+        stage1_epochs=1,
+        stage2_epochs=0,
+        max_steps_per_bucket=2,
+        max_steps=2,
+        save_every_steps=1,
+        checkpoint_dir=tmp_path / "mid_bucket_full",
+        seed=123,
+    )
+    run_curriculum_training(m_uninterrupted, train_rows, val_rows=val_rows, config=cfg_unint)
+
+    # Simulate mid-bucket crash after step 1 (batch 0 of 2 inside bucket 512)
+    mid_dir = tmp_path / "mid_bucket_part"
+    m_mid = _tiny_curriculum_modernbert()
+    cfg_mid1 = JevTrainerConfig(
+        curriculum_buckets=(512, 1024),
+        batch_size=2,
+        learning_rate=5e-4,
+        stage1_epochs=1,
+        stage2_epochs=0,
+        max_steps_per_bucket=2,
+        max_steps=1,
+        save_every_steps=1,
+        checkpoint_dir=mid_dir,
+        seed=123,
+    )
+    run_curriculum_training(m_mid, train_rows, val_rows=val_rows, config=cfg_mid1)
+    ckpt_mid = load_checkpoint(mid_dir / "checkpoint_latest.pt")
+    assert ckpt_mid["global_step"] == 1
+    assert ckpt_mid["next_unit_idx"] == 0
+    assert ckpt_mid["next_batch_idx"] == 1
+
+    # Resume mid-bucket to step 2 (completing bucket 512) and track collate_jev_batch bucket_len on val_rows
+    seen_val_buckets: list[int] = []
+    orig_collate = train_mod.collate_jev_batch
+
+    def _spy_collate(rows_arg, *, bucket_len=512, **kwargs):
+        if any(int(r.get("unpadded_length", 0)) > 600 for r in rows_arg):
+            seen_val_buckets.append(int(bucket_len))
+        return orig_collate(rows_arg, bucket_len=bucket_len, **kwargs)
+
+    m_mid_resumed = _tiny_curriculum_modernbert()
+    cfg_mid2 = JevTrainerConfig(
+        curriculum_buckets=(512, 1024),
+        batch_size=2,
+        learning_rate=5e-4,
+        stage1_epochs=1,
+        stage2_epochs=0,
+        max_steps_per_bucket=1,  # allow 1 step in bucket 1024 if reached, or cap at max_steps=2
+        max_steps=2,
+        save_every_steps=1,
+        checkpoint_dir=mid_dir,
+        seed=123,
+    )
+    cfg_mid2.max_steps_per_bucket = 2
+    res_mid2 = run_curriculum_training(
+        m_mid_resumed, train_rows, val_rows=val_rows, config=cfg_mid2, resume_from=mid_dir
+    )
+    assert res_mid2["global_step"] == 2
+    assert res_mid2["steps_executed_this_run"] == 1
+    for k, full_t in m_uninterrupted.state_dict().items():
+        torch.testing.assert_close(m_mid_resumed.state_dict()[k], full_t, atol=1e-6, rtol=1e-6)
+
+    # Now run a full schedule to completion with val_rows and verify:
+    # (a) val_rows with unpadded_length=701 dynamically selected bucket 1024 (not 512)
+    # (b) final checkpoint persists calibration_report and resuming completed run skips re-fitting
+    done_dir = tmp_path / "done_ckpt"
+    m_done = _tiny_curriculum_modernbert()
+    cfg_done = JevTrainerConfig(
+        curriculum_buckets=(512, 1024),
+        batch_size=2,
+        learning_rate=5e-4,
+        stage1_epochs=1,
+        stage2_epochs=1,
+        max_steps_per_bucket=1,
+        save_every_steps=1,
+        checkpoint_dir=done_dir,
+        seed=321,
+    )
+    with patch.object(train_mod, "collate_jev_batch", side_effect=_spy_collate):
+        res_done = run_curriculum_training(m_done, train_rows, val_rows=val_rows, config=cfg_done)
+    assert 1024 in seen_val_buckets, f"Expected dynamic val bucket 1024, got {seen_val_buckets}"
+    assert res_done["calibration_report"] is not None
+    final_ckpt = load_checkpoint(done_dir / "checkpoint_latest.pt")
+    assert final_ckpt.get("calibration_report") is not None
+
+    with patch.object(train_mod, "fit_temperature_scaling", wraps=train_mod.fit_temperature_scaling) as spy_fit:
+        res_noop = run_curriculum_training(
+            m_done, train_rows, val_rows=val_rows, config=cfg_done, resume_from=done_dir
+        )
+        assert res_noop["steps_executed_this_run"] == 0
+        assert res_noop["calibration_report"] == res_done["calibration_report"]
+        assert spy_fit.call_count == 0, "Completed run must not redundantly re-fit temperatures on resume"
 
 
 def test_stage2_hard_negative_reweighting_benign_twin_fp_and_t1_t2_fn():
@@ -1713,6 +1999,7 @@ def test_notebook_02_train_jev_models_structure_and_cells():
         "gradient_checkpointing",
         "bfloat16",
         "/content/drive/MyDrive/diodemcp/checkpoints",
+        "REQUIRED_SPECIAL_TOKENS",
     ):
         assert expected in joined, f"Expected {expected!r} in 02_train_jev_models.ipynb"
 
