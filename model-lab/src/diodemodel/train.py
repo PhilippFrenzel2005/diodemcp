@@ -26,6 +26,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 import json
+import math
 import os
 from pathlib import Path
 import random
@@ -101,6 +102,13 @@ class JevTrainerConfig:
     hard_negative_weight: float = HARD_NEGATIVE_WEIGHT
     fp_threshold: float = 0.5
     fn_threshold: float = 0.5
+    tool_name_dropout: float = 0.30
+    arg_key_dropout: float = 0.15
+    head_lr_mult: float = 12.0
+    warmup_ratio: float = 0.05
+    special_token_ids: Mapping[str, int] | None = None
+    tool_name_replacement_ids: Sequence[int] | None = None
+    vocab_size: int | None = None
     pad_token_id: int | None = None
     save_every_steps: int | None = 500
     use_bf16: bool = False
@@ -111,6 +119,9 @@ class JevTrainerConfig:
     checkpoint_dir: Path | str | None = None
     status_log_path: Path | str | None = None
     device: str | torch.device = "cpu"
+
+
+CurriculumConfig = JevTrainerConfig
 
 
 # ---------------------------------------------------------------------------------------------
@@ -435,18 +446,213 @@ def align_row_to_bucket(
     }
 
 
+def _apply_segment4_invariance_dropout(
+    aligned_rows: list[dict[str, Any]],
+    *,
+    tool_name_dropout: float = 0.0,
+    arg_key_dropout: float = 0.0,
+    special_token_ids: Mapping[str, int] | None = None,
+    tool_name_replacement_ids: Sequence[int] | None = None,
+    vocab_size: int | None = None,
+    pad_token_id: int | None = None,
+    rng: random.Random | np.random.Generator | None = None,
+) -> None:
+    """Apply tool-name and optional arg-key invariance dropout strictly within ``seg_ids == 4``.
+
+    Never modifies ``seg_ids == 3`` (``UNTRUSTED_DATA``), special structural tokens
+    (``<|call|>``, ``<|arg|>``, ``[SEP]``, ``<|none|>``, query tokens), or emits special / ``[UNK]`` IDs.
+    """
+    p_tool = max(0.0, min(1.0, float(tool_name_dropout)))
+    p_arg = max(0.0, min(1.0, float(arg_key_dropout)))
+    if p_tool <= 0.0 and p_arg <= 0.0:
+        return
+
+    special_set: set[int] = (
+        {int(v) for v in special_token_ids.values() if v is not None}
+        if special_token_ids is not None
+        else set()
+    )
+    excluded: set[int] = set(special_set) | {0, 1, 2, 3}
+    if pad_token_id is not None:
+        excluded.add(int(pad_token_id))
+    else:
+        for r in aligned_rows:
+            if r.get("pad_token_id") is not None:
+                excluded.add(int(r["pad_token_id"]))
+
+    explicit_pool = [
+        int(t) for t in (tool_name_replacement_ids or ()) if int(t) not in excluded and int(t) > 0
+    ]
+
+    low_ord = 200
+    high_ord = 0
+    small_pool: list[int] = []
+    if not explicit_pool:
+        high_specials = [v for v in special_set if v >= 300]
+        if high_specials:
+            vocab_base = min(high_specials)
+            if vocab_size is not None:
+                vocab_base = min(vocab_base, int(vocab_size))
+        elif vocab_size is not None:
+            vocab_base = int(vocab_size)
+        else:
+            max_seen = 0
+            for r in aligned_rows:
+                for t in r["input_ids"]:
+                    ti = int(t)
+                    if ti not in excluded and ti > max_seen:
+                        max_seen = ti
+            vocab_base = (max_seen + 1) if max_seen >= 300 else max(64, max_seen + 1)
+
+        if vocab_base >= 400:
+            low_ord = 200
+            high_ord = max(low_ord + 1, vocab_base - 100)
+        else:
+            small_pool = [i for i in range(11, vocab_base) if i not in excluded]
+            if not small_pool:
+                small_pool = [i for i in range(4, vocab_base) if i not in excluded]
+
+    if not explicit_pool and high_ord <= low_ord and not small_pool:
+        return
+
+    def _draw_float() -> float:
+        if rng is None:
+            return random.random()
+        if isinstance(rng, np.random.Generator):
+            return float(rng.random())
+        return float(rng.random())
+
+    def _draw_int(lo: int, hi_excl: int) -> int:
+        if rng is None:
+            return random.randrange(lo, hi_excl)
+        if isinstance(rng, np.random.Generator):
+            return int(rng.integers(lo, hi_excl))
+        return int(rng.randrange(lo, hi_excl))
+
+    def _sample_replacement() -> int | None:
+        if explicit_pool:
+            return explicit_pool[_draw_int(0, len(explicit_pool))]
+        if high_ord > low_ord:
+            for _ in range(16):
+                cand = _draw_int(low_ord, high_ord)
+                if cand not in excluded:
+                    return cand
+            return low_ord if low_ord not in excluded else None
+        if small_pool:
+            return small_pool[_draw_int(0, len(small_pool))]
+        return None
+
+    call_id = int(special_token_ids["<|call|>"]) if special_token_ids and "<|call|>" in special_token_ids else None
+    arg_id = int(special_token_ids["<|arg|>"]) if special_token_ids and "<|arg|>" in special_token_ids else None
+    sep_id = int(special_token_ids["[SEP]"]) if special_token_ids and "[SEP]" in special_token_ids else None
+
+    seg_cand = CANONICAL_SEGMENT_IDS["CANDIDATE_ACTION"]
+
+    for r in aligned_rows:
+        ids = list(r["input_ids"])
+        segs = r["seg_ids"]
+        roles = r["token_roles"]
+        none_pos = int(r["none_position"])
+        a_pos_list = r["arg_positions"]
+        a_val_list = r["arg_valid_mask"]
+
+        seg4_state = [
+            p
+            for p in range(min(none_pos, len(ids)))
+            if int(segs[p]) == seg_cand and int(roles[p]) == ROLE_STATE
+        ]
+        if not seg4_state:
+            continue
+
+        call_pos: int | None = None
+        if call_id is not None:
+            for p in seg4_state:
+                if int(ids[p]) == call_id:
+                    call_pos = p
+                    break
+        else:
+            call_pos = seg4_state[0]
+
+        arg_marker_set: set[int] = set()
+        for j in range(max(0, len(a_pos_list) - 1)):
+            if bool(a_val_list[j]):
+                ap = int(a_pos_list[j])
+                if 0 <= ap < none_pos and int(segs[ap]) == seg_cand:
+                    arg_marker_set.add(ap)
+        if arg_id is not None:
+            for p in seg4_state:
+                if int(ids[p]) == arg_id:
+                    arg_marker_set.add(p)
+
+        sep_pos: int | None = None
+        if sep_id is not None:
+            for p in seg4_state:
+                if (call_pos is None or p > call_pos) and int(ids[p]) == sep_id:
+                    sep_pos = p
+                    break
+        elif call_pos is not None and (none_pos - 1) > call_pos and int(segs[none_pos - 1]) == seg_cand:
+            sep_pos = none_pos - 1
+
+        # 1. Tool-name span replacement strictly inside (call_pos + 1 .. first_arg_or_sep_pos - 1)
+        if p_tool > 0.0 and call_pos is not None and _draw_float() < p_tool:
+            boundaries = [p for p in arg_marker_set if p > call_pos]
+            boundaries.append(sep_pos if sep_pos is not None else none_pos)
+            first_boundary = min(boundaries)
+            for p in range(call_pos + 1, first_boundary):
+                if int(segs[p]) == seg_cand and int(roles[p]) == ROLE_STATE and int(ids[p]) not in special_set:
+                    rep = _sample_replacement()
+                    if rep is not None:
+                        ids[p] = rep
+
+        # 2. Optional arg-key token replacement immediately after <|arg|> markers in seg_ids == 4
+        if p_arg > 0.0 and arg_marker_set:
+            end_limit = sep_pos if sep_pos is not None else none_pos
+            for ap in sorted(arg_marker_set):
+                key_pos = ap + 1
+                if (
+                    key_pos < end_limit
+                    and key_pos not in arg_marker_set
+                    and int(segs[key_pos]) == seg_cand
+                    and int(roles[key_pos]) == ROLE_STATE
+                    and int(ids[key_pos]) not in special_set
+                    and _draw_float() < p_arg
+                ):
+                    rep = _sample_replacement()
+                    if rep is not None:
+                        ids[key_pos] = rep
+
+        r["input_ids"] = ids
+
+
 def collate_jev_batch(
     rows: Sequence[Mapping[str, Any] | PackedJevRow],
     *,
     bucket_len: int = 512,
     pad_token_id: int | None = None,
     device: str | torch.device = "cpu",
+    tool_name_dropout: float = 0.0,
+    arg_key_dropout: float = 0.0,
+    special_token_ids: Mapping[str, int] | None = None,
+    tool_name_replacement_ids: Sequence[int] | None = None,
+    vocab_size: int | None = None,
+    rng: random.Random | np.random.Generator | None = None,
 ) -> dict[str, Any]:
     """Collate and align a batch of rows to ``bucket_len`` on ``device``."""
     if not rows:
         raise ValueError("collate_jev_batch requires at least 1 row")
     dev = torch.device(device)
     aligned = [align_row_to_bucket(r, bucket_len, pad_token_id=pad_token_id) for r in rows]
+    if tool_name_dropout > 0.0 or arg_key_dropout > 0.0:
+        _apply_segment4_invariance_dropout(
+            aligned,
+            tool_name_dropout=tool_name_dropout,
+            arg_key_dropout=arg_key_dropout,
+            special_token_ids=special_token_ids,
+            tool_name_replacement_ids=tool_name_replacement_ids,
+            vocab_size=vocab_size,
+            pad_token_id=pad_token_id,
+            rng=rng,
+        )
 
     input_ids = torch.tensor([r["input_ids"] for r in aligned], dtype=torch.int64, device=dev)
     seg_ids = torch.tensor([r["seg_ids"] for r in aligned], dtype=torch.int64, device=dev)
@@ -495,6 +701,9 @@ def collate_jev_batch(
         "flipjev_applied": flipjev,
         "bucket_len": int(bucket_len),
     }
+
+
+build_collated_batch = collate_jev_batch
 
 
 def make_synthetic_curriculum_dataset(
@@ -729,19 +938,12 @@ def compute_hard_negative_weights(
             weights.append(float(hard_weight))
             continue
 
-        is_leak_row = (y_cpu[i][0] >= 0.5) or (y_cpu[i][1] >= 0.5)
-        is_t1_t2_or_obf = (
-            cat_upper in {"T1", "T2"}
-            or y_cpu[i][0] >= 0.5
-            or "obf" in var_lower
-            or "b64" in var_lower
-            or "hex" in var_lower
-        )
-        if is_leak_row and is_t1_t2_or_obf:
-            active_leak_probs = [
-                p_cpu[i][h] for h in (0, 1) if y_cpu[i][h] >= 0.5
+        is_attack_row = y_max[i] >= 0.5
+        if is_attack_row:
+            active_attack_probs = [
+                p_cpu[i][h] for h in (0, 1, 2) if y_cpu[i][h] >= 0.5
             ]
-            detected_prob = max(active_leak_probs) if active_leak_probs else p_max[i]
+            detected_prob = max(active_attack_probs) if active_attack_probs else p_max[i]
             if detected_prob < fn_threshold:
                 weights.append(float(hard_weight))
                 continue
@@ -809,6 +1011,7 @@ def save_atomic_checkpoint(
         "best_val_metric": float(best_val_metric),
         "rng_state": _capture_rng_state(),
         "model_kind": model_kind,
+        "span_pool_pointers": bool(getattr(model, "span_pool_pointers", model_kind == "nanojev")),
         "backbone_config": model.backbone.config.to_dict(),
     }
     if extra_state:
@@ -856,12 +1059,13 @@ def _instantiate_model_from_checkpoint_payload(
     cfg_dict = dict(payload.get("backbone_config", {}))
     cfg_dict.pop("attn_implementation", None)
     cfg_dict.pop("_attn_implementation", None)
+    span_pool = bool(payload.get("span_pool_pointers", model_kind == "nanojev"))
     if model_kind == "nanojev":
         cfg = Qwen3Config(**cfg_dict)
-        model: _JevModelBase = NanoJevCausalModel.from_config(cfg)
+        model: _JevModelBase = NanoJevCausalModel.from_config(cfg, span_pool_pointers=span_pool)
     else:
         cfg = ModernBertConfig(**cfg_dict)
-        model = ModernBERTJevModel.from_config(cfg)
+        model = ModernBERTJevModel.from_config(cfg, span_pool_pointers=span_pool)
     model.load_state_dict(payload["model_state_dict"])
     return model.to(torch.device(device)).eval()
 
@@ -886,6 +1090,148 @@ def _select_batch_bucket(
     return sorted_b[-1]
 
 
+def _get_unpadded_length(row: Mapping[str, Any] | PackedJevRow) -> int:
+    if isinstance(row, PackedJevRow):
+        return int(row.unpadded_length)
+    return int(row.get("unpadded_length", len(row.get("input_ids", ()))))
+
+
+def _select_eligible_bucket_indices(
+    rows: Sequence[Mapping[str, Any] | PackedJevRow],
+    bucket_len: int,
+    *,
+    prev_bucket_len: int = 0,
+) -> list[int]:
+    """Return non-truncating row indices for ``bucket_len``, preferring ``(prev_bucket_len, bucket_len]``.
+
+    Never prefix-clamps ``>bucket_len`` rows whenever any ``<= bucket_len`` row exists, and falls
+    back gracefully to ``<= bucket_len`` (or all rows on tiny custom fixtures) when needed.
+    """
+    if not rows:
+        return []
+    lengths = [_get_unpadded_length(r) for r in rows]
+    non_trunc = [i for i, u in enumerate(lengths) if u <= int(bucket_len)]
+    if not non_trunc:
+        return list(range(len(rows)))
+    if int(prev_bucket_len) > 0:
+        band = [i for i in non_trunc if lengths[i] > int(prev_bucket_len)]
+        if band:
+            return band
+    return non_trunc
+
+
+def _perm_for_round(total_len: int, seed: int, wrap_round: int) -> list[int]:
+    idx = list(range(total_len))
+    random.Random(int(seed) + int(wrap_round) * 7919).shuffle(idx)
+    return idx
+
+
+def _select_unit_rows_with_cursor(
+    rows: Sequence[Mapping[str, Any] | PackedJevRow],
+    eligible_set: set[int],
+    *,
+    target_count: int,
+    seed: int,
+    cursor: int,
+    wrap_round: int,
+) -> tuple[list[Any], int, int]:
+    """Select ``target_count`` distinct eligible rows using an advancing shuffled cursor."""
+    n = len(rows)
+    if n == 0 or not eligible_set or target_count <= 0:
+        return [], cursor, wrap_round
+
+    desired = min(int(target_count), len(eligible_set))
+    selected_indices: list[int] = []
+    seen_in_unit: set[int] = set()
+    cur = int(cursor) % n
+    rnd = int(wrap_round)
+    perm = _perm_for_round(n, seed, rnd)
+
+    while len(selected_indices) < desired:
+        idx = perm[cur]
+        if idx in eligible_set and idx not in seen_in_unit:
+            seen_in_unit.add(idx)
+            selected_indices.append(idx)
+        cur += 1
+        if cur >= n:
+            cur = 0
+            rnd += 1
+            perm = _perm_for_round(n, seed, rnd)
+
+    return [rows[i] for i in selected_indices], cur, rnd
+
+
+def build_jev_optimizer_and_scheduler(
+    model: _JevModelBase,
+    cfg: JevTrainerConfig,
+    total_planned_steps: int,
+) -> tuple[torch.optim.AdamW, torch.optim.lr_scheduler.LambdaLR]:
+    """Build AdamW with differential head LR (``head_lr_mult``) and zero decay on norm/bias/emb."""
+    head_prefixes = ("noul_head.", "src_pointer.", "arg_pointer.", "seg_embedding.")
+    head_decay: list[torch.nn.Parameter] = []
+    head_no_decay: list[torch.nn.Parameter] = []
+    backbone_decay: list[torch.nn.Parameter] = []
+    backbone_no_decay: list[torch.nn.Parameter] = []
+
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        is_head = name.startswith(head_prefixes)
+        lname = name.lower()
+        is_no_decay = (
+            param.ndim <= 1
+            or lname.endswith(".bias")
+            or "norm" in lname
+            or "embedding" in lname
+            or "embed" in lname
+        )
+        if is_head:
+            (head_no_decay if is_no_decay else head_decay).append(param)
+        else:
+            (backbone_no_decay if is_no_decay else backbone_decay).append(param)
+
+    base_lr = float(cfg.learning_rate)
+    head_lr = base_lr * float(cfg.head_lr_mult)
+    wd = float(cfg.weight_decay)
+    param_groups: list[dict[str, Any]] = []
+    if backbone_decay:
+        param_groups.append({"params": backbone_decay, "lr": base_lr, "weight_decay": wd, "group_role": "backbone_decay"})
+    if backbone_no_decay:
+        param_groups.append({"params": backbone_no_decay, "lr": base_lr, "weight_decay": 0.0, "group_role": "backbone_no_decay"})
+    if head_decay:
+        param_groups.append({"params": head_decay, "lr": head_lr, "weight_decay": wd, "group_role": "head_decay"})
+    if head_no_decay:
+        param_groups.append({"params": head_no_decay, "lr": head_lr, "weight_decay": 0.0, "group_role": "head_no_decay"})
+    if not param_groups:
+        param_groups.append({"params": list(model.parameters()), "lr": base_lr, "weight_decay": wd})
+
+    optimizer = torch.optim.AdamW(param_groups, lr=base_lr, weight_decay=wd)
+
+    planned = max(1, int(total_planned_steps))
+    warmup_ratio = max(0.0, float(cfg.warmup_ratio))
+    warmup_steps = int(math.ceil(warmup_ratio * planned)) if (warmup_ratio > 0.0 and planned > 1) else 0
+    warmup_steps = min(warmup_steps, max(0, planned - 1))
+
+    def _lr_lambda(step: int) -> float:
+        if warmup_steps > 0 and step < warmup_steps:
+            return float(step + 1) / float(warmup_steps)
+        decay_steps = max(1, planned - warmup_steps)
+        progress = min(1.0, float(step - warmup_steps + 1) / float(decay_steps))
+        return 0.1 + 0.9 * 0.5 * (1.0 + math.cos(math.pi * progress))
+
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=_lr_lambda)
+    return optimizer, scheduler
+
+
+def _resolve_model_vocab_size(model: _JevModelBase, cfg: JevTrainerConfig) -> int | None:
+    if cfg.vocab_size is not None:
+        return int(cfg.vocab_size)
+    backbone = getattr(model, "backbone", None)
+    bcfg = getattr(backbone, "config", None)
+    v = getattr(bcfg, "vocab_size", None)
+    return int(v) if v is not None else None
+
+
 # ---------------------------------------------------------------------------------------------
 # Training loop (single bucket / epoch & full 2-stage length curriculum)
 # ---------------------------------------------------------------------------------------------
@@ -906,6 +1252,9 @@ def train_one_epoch(
     unit_idx: int = 0,
     checkpoint_dir: Path | str | None = None,
     best_val_metric: float = float("inf"),
+    already_prepared: bool = False,
+    prev_bucket_len: int = 0,
+    extra_checkpoint_state: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Execute one curriculum bucket pass in either Stage 1 or Stage 2."""
     cfg = config or JevTrainerConfig()
@@ -913,10 +1262,21 @@ def train_one_epoch(
     model.to(dev)
     model.train()
 
+    if already_prepared:
+        unit_rows: Sequence[Mapping[str, Any] | PackedJevRow] = rows
+    else:
+        eligible_idx = _select_eligible_bucket_indices(
+            rows, int(bucket_len), prev_bucket_len=int(prev_bucket_len)
+        )
+        random.Random(int(cfg.seed) + int(unit_idx) * 1009 + int(epoch) * 37).shuffle(eligible_idx)
+        unit_rows = [rows[i] for i in eligible_idx]
+
+    eff_vocab_size = _resolve_model_vocab_size(model, cfg)
+
     loss_cfg = cfg.stage1_loss_config if stage == 1 else cfg.stage2_loss_config
     batch_size = max(1, int(cfg.batch_size))
     grad_accum = max(1, int(cfg.grad_accum_steps))
-    total_batches = (len(rows) + batch_size - 1) // batch_size
+    total_batches = (len(unit_rows) + batch_size - 1) // batch_size
     if cfg.max_steps_per_bucket is not None:
         total_batches = min(total_batches, int(cfg.max_steps_per_bucket) * grad_accum)
 
@@ -937,7 +1297,7 @@ def train_one_epoch(
     for b_idx in range(start_batch_idx, total_batches):
         if max_steps is not None and cur_step >= max_steps:
             break
-        batch_slice = rows[b_idx * batch_size : (b_idx + 1) * batch_size]
+        batch_slice = unit_rows[b_idx * batch_size : (b_idx + 1) * batch_size]
         if not batch_slice:
             continue
         batch = collate_jev_batch(
@@ -945,6 +1305,11 @@ def train_one_epoch(
             bucket_len=bucket_len,
             pad_token_id=cfg.pad_token_id,
             device=dev,
+            tool_name_dropout=float(cfg.tool_name_dropout),
+            arg_key_dropout=float(cfg.arg_key_dropout),
+            special_token_ids=cfg.special_token_ids,
+            tool_name_replacement_ids=cfg.tool_name_replacement_ids,
+            vocab_size=eff_vocab_size,
         )
         inputs = [batch[name] for name in INPUT_TENSOR_NAMES]
 
@@ -1014,10 +1379,13 @@ def train_one_epoch(
             )
             if eff_ckpt_dir is not None and save_every is not None and (cur_step % save_every == 0):
                 bucket_done_now = b_idx >= total_batches - 1
-                extra_periodic = {
-                    "next_unit_idx": (unit_idx + 1) if bucket_done_now else unit_idx,
-                    "next_batch_idx": 0 if bucket_done_now else (b_idx + 1),
-                }
+                extra_periodic: dict[str, Any] = dict(extra_checkpoint_state or {})
+                extra_periodic.update(
+                    {
+                        "next_unit_idx": (unit_idx + 1) if bucket_done_now else unit_idx,
+                        "next_batch_idx": 0 if bucket_done_now else (b_idx + 1),
+                    }
+                )
                 save_atomic_checkpoint(
                     eff_ckpt_dir / "checkpoint_latest.pt",
                     model=model,
@@ -1090,17 +1458,37 @@ def run_curriculum_training(
 
     batch_size = max(1, int(cfg.batch_size))
     grad_accum = max(1, int(cfg.grad_accum_steps))
-    batches_per_bucket = (len(loaded_train) + batch_size - 1) // batch_size
-    if cfg.max_steps_per_bucket is not None:
-        batches_per_bucket = min(batches_per_bucket, int(cfg.max_steps_per_bucket) * grad_accum)
-    steps_per_bucket = max(1, (batches_per_bucket + grad_accum - 1) // grad_accum)
-    total_planned_steps = max(1, len(schedule) * steps_per_bucket)
+    unique_buckets = sorted({int(b) for b in cfg.curriculum_buckets})
+    prev_bucket_map = {
+        b: (unique_buckets[i - 1] if i > 0 else 0) for i, b in enumerate(unique_buckets)
+    }
+    eligible_map: dict[int, set[int]] = {
+        b: set(
+            _select_eligible_bucket_indices(
+                loaded_train, b, prev_bucket_len=prev_bucket_map[b]
+            )
+        )
+        for b in unique_buckets
+    }
 
-    optimizer = torch.optim.AdamW(
-        model.parameters(), lr=cfg.learning_rate, weight_decay=cfg.weight_decay
+    cap_rows = (
+        int(cfg.max_steps_per_bucket) * grad_accum * batch_size
+        if cfg.max_steps_per_bucket is not None
+        else None
     )
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=total_planned_steps, eta_min=cfg.learning_rate * 0.1
+    total_planned_steps = 0
+    for _st, _ep, b_len in schedule:
+        n_elig = len(eligible_map.get(int(b_len), ()))
+        u_rows = min(n_elig, cap_rows) if cap_rows is not None else n_elig
+        u_batches = (u_rows + batch_size - 1) // batch_size
+        if cfg.max_steps_per_bucket is not None:
+            u_batches = min(u_batches, int(cfg.max_steps_per_bucket) * grad_accum)
+        if u_batches > 0:
+            total_planned_steps += max(1, (u_batches + grad_accum - 1) // grad_accum)
+    total_planned_steps = max(1, total_planned_steps)
+
+    optimizer, scheduler = build_jev_optimizer_and_scheduler(
+        model, cfg, total_planned_steps
     )
 
     global_step = 0
@@ -1108,6 +1496,8 @@ def run_curriculum_training(
     start_unit_idx = 0
     start_batch_in_unit = 0
     resumed_from_step = 0
+    cursor = 0
+    wrap_round = 0
     calibration_report: dict[str, Any] | None = None
 
     resume_path: Path | None = None
@@ -1131,6 +1521,12 @@ def run_curriculum_training(
         best_val_metric = float(ckpt.get("best_val_metric", float("inf")))
         start_unit_idx = int(ckpt.get("next_unit_idx", 0))
         start_batch_in_unit = int(ckpt.get("next_batch_idx", 0))
+        if start_batch_in_unit > 0:
+            cursor = int(ckpt.get("unit_start_cursor", 0))
+            wrap_round = int(ckpt.get("unit_start_wrap_round", 0))
+        else:
+            cursor = int(ckpt.get("next_cursor", 0))
+            wrap_round = int(ckpt.get("next_wrap_round", 0))
         calibration_report = ckpt.get("calibration_report", None)
         log_train_event(
             status_log,
@@ -1152,10 +1548,32 @@ def run_curriculum_training(
             break
         stage, epoch, bucket_len = schedule[unit_idx]
         b_start = start_batch_in_unit if unit_idx == start_unit_idx else 0
+        elig_set = eligible_map.get(int(bucket_len), set())
+        target_rows = len(elig_set) if cap_rows is None else min(len(elig_set), cap_rows)
+        unit_start_cursor = cursor
+        unit_start_wrap_round = wrap_round
+        unit_rows, after_cursor, after_wrap_round = _select_unit_rows_with_cursor(
+            loaded_train,
+            elig_set,
+            target_count=target_rows,
+            seed=int(cfg.seed),
+            cursor=cursor,
+            wrap_round=wrap_round,
+        )
+        cursor = after_cursor
+        wrap_round = after_wrap_round
+        if not unit_rows:
+            continue
 
+        unit_ckpt_extra = {
+            "unit_start_cursor": unit_start_cursor,
+            "unit_start_wrap_round": unit_start_wrap_round,
+            "next_cursor": cursor,
+            "next_wrap_round": wrap_round,
+        }
         res = train_one_epoch(
             model,
-            loaded_train,
+            unit_rows,
             optimizer,
             stage=stage,
             bucket_len=bucket_len,
@@ -1169,6 +1587,9 @@ def run_curriculum_training(
             unit_idx=unit_idx,
             checkpoint_dir=ckpt_dir,
             best_val_metric=best_val_metric,
+            already_prepared=True,
+            prev_bucket_len=prev_bucket_map.get(int(bucket_len), 0),
+            extra_checkpoint_state=unit_ckpt_extra,
         )
         global_step = int(res["global_step"])
         steps_executed_this_run += int(res["steps_run"])
@@ -1191,6 +1612,10 @@ def run_curriculum_training(
             extra = {
                 "next_unit_idx": next_unit_idx,
                 "next_batch_idx": next_batch_idx,
+                "unit_start_cursor": unit_start_cursor,
+                "unit_start_wrap_round": unit_start_wrap_round,
+                "next_cursor": cursor,
+                "next_wrap_round": wrap_round,
                 "calibration_report": calibration_report,
             }
             if res.get("saved_at_step") != global_step:
@@ -1297,6 +1722,56 @@ def run_curriculum_training(
 # ---------------------------------------------------------------------------------------------
 # Evaluation Suite (`evaluate_jev_checkpoint`)
 # ---------------------------------------------------------------------------------------------
+def compute_auroc_and_pr_auc(y_true: np.ndarray, y_score: np.ndarray) -> tuple[float, float]:
+    """Compute exact pure-numpy AUROC (Mann-Whitney U with tie averaging) and PR-AUC (average precision)."""
+    y = (np.asarray(y_true, dtype=np.float64) >= 0.5).astype(np.int64)
+    s = np.asarray(y_score, dtype=np.float64)
+    n = int(len(y))
+    n_pos = int(y.sum())
+    n_neg = n - n_pos
+    if n_pos == 0 or n_neg == 0:
+        return 0.0, 0.0
+
+    # AUROC with average ranks for ties
+    order_asc = np.argsort(s, kind="mergesort")
+    s_asc = s[order_asc]
+    y_asc = y[order_asc]
+    ranks = np.empty(n, dtype=np.float64)
+    i = 0
+    while i < n:
+        j = i + 1
+        while j < n and s_asc[j] == s_asc[i]:
+            j += 1
+        avg_rank = 0.5 * ((i + 1) + j)
+        ranks[i:j] = avg_rank
+        i = j
+    rank_sum_pos = float(ranks[y_asc == 1].sum())
+    auroc = (rank_sum_pos - n_pos * (n_pos + 1) / 2.0) / float(n_pos * n_neg)
+
+    # PR-AUC (step average precision grouped over unique score thresholds descending)
+    order_desc = order_asc[::-1]
+    s_desc = s[order_desc]
+    y_desc = y[order_desc]
+    tp = 0.0
+    fp = 0.0
+    prev_recall = 0.0
+    ap = 0.0
+    k = 0
+    while k < n:
+        end = k + 1
+        while end < n and s_desc[end] == s_desc[k]:
+            end += 1
+        tp += float(y_desc[k:end].sum())
+        fp += float((end - k) - int(y_desc[k:end].sum()))
+        recall = tp / float(n_pos)
+        precision = tp / max(1.0, tp + fp)
+        ap += (recall - prev_recall) * precision
+        prev_recall = recall
+        k = end
+
+    return float(max(0.0, min(1.0, auroc))), float(max(0.0, min(1.0, ap)))
+
+
 def evaluate_jev_checkpoint(
     model_or_checkpoint: _JevModelBase | Path | str,
     eval_rows: Sequence[Mapping[str, Any] | PackedJevRow] | Path | str,
@@ -1305,6 +1780,8 @@ def evaluate_jev_checkpoint(
     bucket_len: int | None = None,
     batch_size: int = 16,
     threshold: float = 0.5,
+    warn_min: float = 0.20,
+    critical_min: float = 0.80,
     pad_token_id: int | None = None,
     device: str | torch.device = "cpu",
 ) -> dict[str, Any]:
@@ -1438,18 +1915,42 @@ def evaluate_jev_checkpoint(
     )
     pointer_top1_acc = 0.5 * (src_pointer_top1_acc + arg_pointer_top1_acc)
 
-    # 5. Per-head & overall ECE + Brier
+    # 5. Per-head & overall ECE + Brier + AUROC / PR-AUC + band-threshold recall/FPR
     temps = eval_model.logit_temperatures.detach().cpu()
     calib_rep = temperature_calibration_report(noul_logits, noul_targets, temps)
     brier_per_head_t = ((noul_probs - noul_targets) ** 2).mean(dim=0)
     brier_per_head = [float(x) for x in brier_per_head_t.tolist()]
     brier_overall = float(brier_per_head_t.mean().item())
 
+    auroc, pr_auc = compute_auroc_and_pr_auc(is_attack, p_max)
+    p_np = noul_probs.numpy()
+    auroc_per_head: list[float] = []
+    pr_auc_per_head: list[float] = []
+    for h in range(3):
+        h_auc, h_ap = compute_auroc_and_pr_auc(y_np[:, h], p_np[:, h])
+        auroc_per_head.append(h_auc)
+        pr_auc_per_head.append(h_ap)
+
+    det_warn = p_max >= float(warn_min)
+    det_crit = p_max >= float(critical_min)
+    recall_at_warn_min = float(det_warn[is_attack].mean()) if bool(is_attack.any()) else 0.0
+    recall_at_critical_min = float(det_crit[is_attack].mean()) if bool(is_attack.any()) else 0.0
+    fpr_at_warn_min = float(det_warn[is_benign].mean()) if bool(is_benign.any()) else 0.0
+    fpr_at_critical_min = float(det_crit[is_benign].mean()) if bool(is_benign.any()) else 0.0
+
     return {
         "num_rows": len(rows),
         "per_threat_recall": per_threat_recall,
         "per_threat_counts": per_threat_counts,
         "attack_recall": attack_recall,
+        "auroc": auroc,
+        "pr_auc": pr_auc,
+        "auroc_per_head": auroc_per_head,
+        "pr_auc_per_head": pr_auc_per_head,
+        "recall_at_warn_min": recall_at_warn_min,
+        "recall_at_critical_min": recall_at_critical_min,
+        "fpr_at_warn_min": fpr_at_warn_min,
+        "fpr_at_critical_min": fpr_at_critical_min,
         "flipjev_attack_recall": flipjev_attack_recall,
         "flipjev_benign_dos_fpr": flipjev_benign_dos_fpr,
         "flipjev_dos_fpr": flipjev_benign_dos_fpr,
@@ -1674,10 +2175,14 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 __all__ = [
     "CURRICULUM_BUCKETS",
+    "CurriculumConfig",
     "HARD_NEGATIVE_WEIGHT",
     "JevTrainerConfig",
     "align_row_to_bucket",
+    "build_collated_batch",
+    "build_jev_optimizer_and_scheduler",
     "collate_jev_batch",
+    "compute_auroc_and_pr_auc",
     "compute_hard_negative_weights",
     "evaluate_jev_checkpoint",
     "load_checkpoint",

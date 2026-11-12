@@ -24,6 +24,7 @@ causal handling of Qwen3 is *not* re-applied: our own mask already contains the 
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any, Final
 
 import onnx
@@ -334,6 +335,15 @@ def pool_causal_slot_hidden(
     return slots_f32.to(dtype=hidden.dtype)
 
 
+@dataclass(frozen=True)
+class JevModelConfig:
+    """Head and pointer configuration for ``ModernBERTJevModel`` / ``NanoJevCausalModel``."""
+
+    num_segments: int = NUM_SEGMENTS
+    pointer_dim: int | None = None
+    span_pool_pointers: bool = False
+
+
 class _JevModelBase(nn.Module):
     """Shared Jev heads + segment embedding + temperature buffer around an eager HF backbone."""
 
@@ -348,6 +358,8 @@ class _JevModelBase(nn.Module):
         *,
         num_segments: int = NUM_SEGMENTS,
         pointer_dim: int | None = None,
+        span_pool_pointers: bool | None = None,
+        model_config: JevModelConfig | None = None,
     ) -> None:
         super().__init__()
         impl = getattr(backbone.config, "_attn_implementation", None)
@@ -356,22 +368,36 @@ class _JevModelBase(nn.Module):
                 "Jev models require attn_implementation='eager' (additive 4D token_roles mask + "
                 f"deterministic opset-17 ONNX export); backbone uses {impl!r}"
             )
+        if model_config is not None:
+            eff_num_segments = int(model_config.num_segments)
+            eff_pointer_dim = model_config.pointer_dim if pointer_dim is None else pointer_dim
+            use_span_pool = (
+                bool(model_config.span_pool_pointers)
+                if span_pool_pointers is None
+                else bool(span_pool_pointers)
+            )
+        else:
+            eff_num_segments = int(num_segments)
+            eff_pointer_dim = pointer_dim
+            use_span_pool = bool(self.causal) if span_pool_pointers is None else bool(span_pool_pointers)
+
         hidden = int(backbone.config.hidden_size)
         self.backbone = backbone
-        self.seg_embedding = nn.Embedding(num_segments, hidden)
+        self.span_pool_pointers = use_span_pool
+        self.seg_embedding = nn.Embedding(eff_num_segments, hidden)
         nn.init.normal_(self.seg_embedding.weight, std=0.02)
-        dim = int(pointer_dim) if pointer_dim else hidden
+        dim = int(eff_pointer_dim) if eff_pointer_dim else hidden
         self.noul_head = NoulHead(hidden)
         self.src_pointer = PointerHead(
             hidden,
             dim,
-            causal_num_candidates=(SRC_SLOTS - 1) if self.causal else None,
+            causal_num_candidates=(SRC_SLOTS - 1) if use_span_pool else None,
             causal_is_arg=False,
         )
         self.arg_pointer = PointerHead(
             hidden,
             dim,
-            causal_num_candidates=(ARG_SLOTS - 1) if self.causal else None,
+            causal_num_candidates=(ARG_SLOTS - 1) if use_span_pool else None,
             causal_is_arg=True,
         )
         self.register_buffer("logit_temperatures", torch.ones(NUM_NOUL_HEADS, dtype=torch.float32))
@@ -391,6 +417,8 @@ class _JevModelBase(nn.Module):
         vocab_size: int | None = None,
         num_segments: int = NUM_SEGMENTS,
         pointer_dim: int | None = None,
+        span_pool_pointers: bool | None = None,
+        model_config: JevModelConfig | None = None,
         **backbone_kwargs: Any,
     ) -> _JevModelBase:
         """Load backbone weights (HF id or local dir) with eager attention; heads are freshly initialised.
@@ -404,7 +432,13 @@ class _JevModelBase(nn.Module):
         )
         if vocab_size is not None and vocab_size > backbone.get_input_embeddings().num_embeddings:
             backbone.resize_token_embeddings(int(vocab_size))
-        return cls(backbone, num_segments=num_segments, pointer_dim=pointer_dim)
+        return cls(
+            backbone,
+            num_segments=num_segments,
+            pointer_dim=pointer_dim,
+            span_pool_pointers=span_pool_pointers,
+            model_config=model_config,
+        )
 
     def gradient_checkpointing_enable(self, **kwargs: Any) -> None:
         self.backbone.gradient_checkpointing_enable(**kwargs)
@@ -577,6 +611,7 @@ __all__ = [
     "MASK_NEG",
     "ONNX_DYNAMIC_AXES",
     "SRC_SLOTS",
+    "JevModelConfig",
     "ModernBERTJevModel",
     "NanoJevCausalModel",
     "NoulHead",
