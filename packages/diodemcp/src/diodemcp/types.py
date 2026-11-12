@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import math
 import time
 from enum import IntFlag, StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field, GetCoreSchemaHandler
+from pydantic import BaseModel, Field, GetCoreSchemaHandler, field_validator
 from pydantic_core import core_schema
 
 from diodemcp.constants import CRITICAL_THRESHOLD, WARN_THRESHOLD
@@ -88,7 +89,22 @@ class DecisionScores(BaseModel):
     p_sem: float = Field(ge=0.0, le=1.0)
     p_hijack: float = Field(ge=0.0, le=1.0)
     attributed_span_idx: int | None = Field(default=None, ge=0)
+    attributed_span_id: str | None = None
     attributed_arg_key: str | None = None
+
+    @field_validator("p_enc", "p_sem", "p_hijack", mode="before")
+    @classmethod
+    def _coerce_probability_fail_closed(cls, value: Any) -> Any:
+        if isinstance(value, bool):
+            raise ValueError("Boolean is not a valid probability")
+        if isinstance(value, (int, float)) or hasattr(value, "__float__"):
+            val = float(value)
+            if math.isnan(val) or math.isinf(val) or val > 1.0:
+                return 1.0
+            if val < 0.0:
+                return 0.0
+            return val
+        return value
 
     @property
     def p_max(self) -> float:

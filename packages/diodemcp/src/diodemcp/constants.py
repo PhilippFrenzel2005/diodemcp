@@ -29,9 +29,31 @@ REQUIRED_BUNDLE_FILES: Final[tuple[str, ...]] = (
 )
 
 MAX_SEQ_LEN: Final[int] = 8192
-LENGTH_BUCKETS: Final[tuple[int, ...]] = (256, 512, 1024, 2048, 4096, 8192)
+LENGTH_BUCKETS: Final[tuple[int, ...]] = (128, 256, 512, 1024, 2048, 4096)
+DEFAULT_INFERENCE_BUCKET: Final[int] = 512
 MAX_PCHUNKS: Final[int] = 32
 MAX_ARGS: Final[int] = 16
+
+TOKEN_ROLE_PAD: Final[int] = 0
+TOKEN_ROLE_STATE: Final[int] = 1
+TOKEN_ROLE_QUERY: Final[int] = 2
+
+ONNX_INPUT_NAMES: Final[tuple[str, ...]] = (
+    "input_ids",
+    "seg_ids",
+    "token_roles",
+    "query_positions",
+    "pchunk_positions",
+    "pchunk_valid_mask",
+    "arg_positions",
+    "arg_valid_mask",
+)
+
+ONNX_OUTPUT_NAMES: Final[tuple[str, ...]] = (
+    "noul_probs",
+    "src_choice_probs",
+    "arg_choice_probs",
+)
 
 JEV_SPECIAL_TOKENS: Final[tuple[str, ...]] = (
     "<|intent|>",
