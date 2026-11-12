@@ -912,8 +912,17 @@ def test_git_config_readonly_does_not_suppress_compound_mutations_or_value_flags
         "git config -l",
         "git config --list",
         "git config --global --get user.email",
+        "git config -f my-custom-gitconfig.ini --get user.email",
     ):
         assert (
             reg.classify_request("claude", "Bash", {"command": ro_cmd})
             == CapabilityFlag.LOCAL_SAFE
         )
+
+    # Subshell $() with both read-only and mutating `git config` in a single shell segment must flag MUTATES_SENSITIVE
+    subshell_cmd = "echo $(git config --get user.name) $(git config core.hooksPath /tmp/evil)"
+    assert (
+        CapabilityFlag.MUTATES_SENSITIVE
+        in reg.classify_request("claude", "Bash", {"command": subshell_cmd})
+    )
+

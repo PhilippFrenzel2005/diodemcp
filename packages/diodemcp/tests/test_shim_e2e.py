@@ -33,6 +33,7 @@ import threading
 from typing import Any
 
 import pytest
+import pytest_asyncio
 
 from diodemcp.engine import (
     AsyncEngineClient,
@@ -57,7 +58,7 @@ FAKE_ENV_SECRET = (
 SECOND_SECRET = "ghp_99887766554433221100aabbccddeeff0011"
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def live_engine(tmp_path: Path):
     """Run an in-process `DiodeEngineServer` over Unix socket for fast deterministic e2e tests."""
     state_dir = tmp_path / "state"
@@ -1380,3 +1381,88 @@ async def test_oversized_frame_rejected_without_crash_and_subprocess_stdout_puri
     assert "STRAY_PYTHON_STDOUT_FROM_SHIM" not in out_bytes.decode("utf-8")
     assert "STRAY_FD1_WRITE_FROM_SHIM" not in out_bytes.decode("utf-8")
     assert "UPSTREAM_DEBUG_BANNER" in err_bytes.decode("utf-8")
+
+
+@pytest.mark.asyncio
+async def test_resources_read_and_prompts_get_emit_jsonrpc_32603_on_record_output_failure(
+    live_engine, tmp_path: Path
+) -> None:
+    """Verify `resources/read` and `prompts/get` return JSON-RPC `-32603` error on `record_output` failure while `tools/call` returns `isError: True`."""
+    cfg, ws_dir, _server = live_engine
+    script = _write_mock_mcp_server_script(tmp_path / "mock_server.py")
+    host = _InProcessHostDriver()
+    real_client = AsyncEngineClient(cfg, auto_spawn=False)
+
+    class _FailingRecordOutputClient:
+        def __init__(self, inner: AsyncEngineClient) -> None:
+            self._inner = inner
+
+        async def evaluate_call(self, **kwargs: Any) -> dict[str, Any]:
+            return await self._inner.evaluate_call(**kwargs)
+
+        async def record_output(self, **kwargs: Any) -> dict[str, Any]:
+            raise RuntimeError("simulated ledger persistence failure")
+
+    shim_task = asyncio.create_task(
+        async_run_stdio_shim(
+            "brave_search",
+            [sys.executable, "-u", str(script)],
+            cfg.state_dir,
+            workspace_root=ws_dir,
+            stdin_stream=host.stdin_reader,
+            stdout_write=host.on_stdout_write,
+            engine_client=_FailingRecordOutputClient(real_client),  # type: ignore[arg-type]
+        )
+    )
+    try:
+        host.send_json(
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"capabilities": {}}}
+        )
+        await host.recv_msg()
+
+        host.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 301,
+                "method": "resources/read",
+                "params": {"uri": "file:///workspace/notes.txt"},
+            }
+        )
+        res_err = await host.recv_msg()
+        assert res_err["id"] == 301
+        assert "error" in res_err
+        assert "result" not in res_err
+        assert res_err["error"]["code"] == -32603
+        assert "resources/read" in res_err["error"]["message"]
+
+        host.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 302,
+                "method": "prompts/get",
+                "params": {"name": "ext_prompt"},
+            }
+        )
+        prompt_err = await host.recv_msg()
+        assert prompt_err["id"] == 302
+        assert "error" in prompt_err
+        assert "result" not in prompt_err
+        assert prompt_err["error"]["code"] == -32603
+        assert "prompts/get" in prompt_err["error"]["message"]
+
+        host.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 303,
+                "method": "tools/call",
+                "params": {"name": "read_file", "arguments": {"path": "src/billing.py"}},
+            }
+        )
+        tool_err = await host.recv_msg()
+        assert tool_err["id"] == 303
+        assert "result" in tool_err
+        assert tool_err["result"]["isError"] is True
+    finally:
+        host.close_stdin()
+        await asyncio.wait_for(shim_task, timeout=5.0)
+

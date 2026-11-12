@@ -233,16 +233,107 @@ def _extract_tool_response_text(payload: Mapping[str, Any]) -> str:
         if key in payload and payload[key] is not None:
             val = payload[key]
             if isinstance(val, str):
-                return val
+                if val:
+                    return val
+                continue
             parts: list[str] = []
             _collect_strings(val, parts)
             if parts:
                 return "\n".join(parts)
+            if isinstance(val, (Mapping, Sequence)) and not val:
+                continue
             try:
                 return json.dumps(val, ensure_ascii=False)
             except Exception:
                 return str(val)
     return ""
+
+
+_NATIVE_FILE_READ_TOOLS: frozenset[str] = frozenset(
+    {
+        "read",
+        "readfile",
+        "read_file",
+        "read_text_file",
+        "read_media_file",
+        "read_multiple_files",
+        "view",
+        "view_file",
+        "notebookread",
+        "notebook_read",
+        "cat",
+    }
+)
+_NATIVE_EDITOR_VIEW_TOOLS: frozenset[str] = frozenset(
+    {
+        "str_replace_editor",
+        "str_replace_based_edit_tool",
+        "text_editor",
+    }
+)
+_HOOK_PATH_KEYS: frozenset[str] = frozenset(
+    {
+        "file_path",
+        "path",
+        "filepath",
+        "target_file",
+        "targetfile",
+        "target_path",
+        "absolute_path",
+        "absolutepath",
+        "notebook_path",
+        "file",
+        "filename",
+        "paths",
+        "files",
+    }
+)
+
+
+def _fallback_read_text_for_post_tool(
+    tool_name: str,
+    tool_input: Mapping[str, Any],
+    payload: Mapping[str, Any],
+    workspace_root: str,
+) -> str:
+    tl = tool_name.strip().lower()
+    if tl.startswith("mcp__"):
+        parts = tl.split("__", 2)
+        if len(parts) == 3:
+            tl = parts[2]
+    elif "." in tl:
+        tl = tl.split(".", 1)[1]
+
+    is_view_editor = tl in _NATIVE_EDITOR_VIEW_TOOLS and (
+        str(tool_input.get("command") or "").strip().lower() == "view"
+    )
+    if tl not in _NATIVE_FILE_READ_TOOLS and not is_view_editor:
+        return ""
+
+    candidates: list[str] = []
+    for mapping in (tool_input, payload):
+        if not isinstance(mapping, Mapping):
+            continue
+        for k, v in mapping.items():
+            if str(k).strip().lower() not in _HOOK_PATH_KEYS:
+                continue
+            if isinstance(v, str) and v.strip():
+                candidates.append(v.strip())
+            elif isinstance(v, Sequence) and not isinstance(v, (str, bytes)):
+                for item in v:
+                    if isinstance(item, str) and item.strip():
+                        candidates.append(item.strip())
+
+    read_chunks: list[str] = []
+    seen_paths: set[str] = set()
+    for fp in candidates:
+        if fp in seen_paths:
+            continue
+        seen_paths.add(fp)
+        content = _best_effort_read_local_file(fp, workspace_root)
+        if content:
+            read_chunks.append(content)
+    return "\n".join(read_chunks)
 
 
 def _extract_cursor_edit_text(payload: Mapping[str, Any]) -> str:
@@ -535,6 +626,10 @@ def run_hook(
                 )
                 tool_input = _normalize_tool_input(tool_name, raw_in)
                 output_text = _extract_tool_response_text(payload)
+                if not output_text:
+                    output_text = _fallback_read_text_for_post_tool(
+                        tool_name, tool_input, payload, ws
+                    )
                 active_client.record_output(
                     workspace_root=ws,
                     server="native",
@@ -760,6 +855,10 @@ def run_hook(
             )
             tool_input = _normalize_tool_input(tool_name, raw_in)
             output_text = _extract_tool_response_text(payload)
+            if not output_text:
+                output_text = _fallback_read_text_for_post_tool(
+                    tool_name, tool_input, payload, ws
+                )
             active_client.record_output(
                 workspace_root=ws,
                 server="native",

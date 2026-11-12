@@ -285,7 +285,7 @@ _SHELL_DESTRUCTIVE_RE = re.compile(
 
 _SHELL_SEGMENT_SPLIT_RE = re.compile(r"(?:\n|;|&&|\|\||\|(?!=)|(?<![<>])&(?![>&]))+")
 _GIT_CONFIG_PRE_FLAG_TOKEN = (
-    r"(?:(?:-f|--file|--blob)\s+(?:\"[^\"]*\"|'[^']*'|[^\s;|&-]+)"
+    r"(?:(?:-f|--file|--blob)\s+(?:\"[^\"]*\"|'[^']*'|(?!-)[^\s;|&]+)"
     r"|--?[A-Za-z][A-Za-z0-9-]*(?:=(?:\"[^\"]*\"|'[^']*'|[^\s;|&]+))?)"
 )
 _GIT_CONFIG_READONLY_RE = re.compile(
@@ -294,7 +294,7 @@ _GIT_CONFIG_READONLY_RE = re.compile(
     re.IGNORECASE,
 )
 _GIT_CONFIG_MUTATION_RE = re.compile(
-    r"\bgit\s+config\b[^\n;|&]{0,160}(?:"
+    r"\bgit\s+config\b[^\n;|&()`]{0,160}(?:"
     r"\s(?:--global|--system|-f|--file)\b"
     r"|\b(?:core\.(?:hooksPath|sshCommand|fsmonitor|editor|pager)"
     r"|alias\.[A-Za-z0-9_-]+"
@@ -1096,11 +1096,10 @@ class CapabilityRegistry:
                 if _SHELL_DESTRUCTIVE_RE.search(cmd) is not None or _has_pipe_to_shell(cmd):
                     flags |= CapabilityFlag.MUTATES_SENSITIVE
                 for seg in _SHELL_SEGMENT_SPLIT_RE.split(cmd):
-                    if (
-                        _GIT_CONFIG_MUTATION_RE.search(seg) is not None
-                        and _GIT_CONFIG_READONLY_RE.search(seg) is None
-                    ):
-                        flags |= CapabilityFlag.MUTATES_SENSITIVE
+                    for m_git in _GIT_CONFIG_MUTATION_RE.finditer(seg):
+                        if _GIT_CONFIG_READONLY_RE.match(seg, m_git.start()) is None:
+                            flags |= CapabilityFlag.MUTATES_SENSITIVE
+                            break
                 stripped_cmd_sql = _strip_sql_comments(cmd)
                 if re.search(
                     r"\b(?:psql|sqlite3|mysql)\b", cmd, re.IGNORECASE

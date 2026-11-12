@@ -244,7 +244,7 @@ def _expand_arg_views_detailed(raw_strings: list[str]) -> list[tuple[str, bool, 
 
     for candidate_src, _ in base_inputs:
         for match in _B64_CANDIDATE_RE.finditer(candidate_src):
-            tok = match.group(0)
+            tok = match.group(0).rstrip("=")
             padded = tok + ("=" * ((4 - len(tok) % 4) % 4))
             for decoder in (base64.b64decode, base64.urlsafe_b64decode):
                 try:
@@ -454,11 +454,6 @@ def _intent_explicitly_authorizes_copy(intent: str, span: TaintSpan) -> bool:
             target_identifiers.append(label_lower)
         if len(basename_lower) >= 5 and basename_lower not in target_identifiers:
             target_identifiers.append(basename_lower)
-
-    for email in _EMAIL_RE.findall(span.text):
-        email_lower = email.lower()
-        if email_lower not in target_identifiers:
-            target_identifiers.append(email_lower)
 
     if not target_identifiers:
         return False

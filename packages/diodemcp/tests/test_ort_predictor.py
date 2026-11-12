@@ -519,6 +519,7 @@ def test_ort_predictor_coerces_nan_inf_and_out_of_range_outputs_fail_closed(
     assert scores.attributed_arg_key is None
 
 
+@pytest.mark.asyncio
 async def test_ort_predictor_concurrent_thread_and_async_safety(
     synthetic_jev_bundle_dir: Path,
 ) -> None:

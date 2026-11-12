@@ -1069,11 +1069,23 @@ class _McpShimCore:
                         extra_flags=extra_flags,
                     )
                 except Exception as exc:
-                    return _build_mcp_tool_error_response(
-                        response_msg.get("id"),
-                        banner="🛑 CRITICAL DiodeMCP Alert: Failed to persist output taint before forwarding; failing closed.",
-                        detail=sanitize_error_message(exc),
-                    )
+                    if method == "tools/call":
+                        return _build_mcp_tool_error_response(
+                            response_msg.get("id"),
+                            banner="🛑 CRITICAL DiodeMCP Alert: Failed to persist output taint before forwarding; failing closed.",
+                            detail=sanitize_error_message(exc),
+                        )
+                    return {
+                        "jsonrpc": "2.0",
+                        "id": response_msg.get("id"),
+                        "error": {
+                            "code": -32603,
+                            "message": (
+                                f"Blocked by DiodeMCP: failed to persist {method} output taint "
+                                f"before forwarding; failing closed ({sanitize_error_message(exc)})"
+                            ),
+                        },
+                    }
         return response_msg
 
     def handle_cancellation_notification(self, msg: Mapping[str, Any]) -> bool:

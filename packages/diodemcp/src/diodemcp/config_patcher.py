@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import shlex
 import stat
 from typing import Any
 
@@ -213,7 +214,10 @@ def _is_diodemcp_shim_entry(entry: Any) -> bool:
 def _is_diodemcp_hook_cmd(cmd: Any) -> bool:
     if not isinstance(cmd, str):
         return False
-    tokens = cmd.strip().split()
+    try:
+        tokens = shlex.split(cmd.strip())
+    except ValueError:
+        tokens = cmd.strip().split()
     for idx in range(len(tokens) - 2):
         tok_base = os.path.basename(tokens[idx]).lower()
         if (
@@ -266,8 +270,9 @@ def _patch_claude_hooks(
     diodemcp_bin: str,
     state_dir: Path,
 ) -> None:
+    quoted_state = shlex.quote(str(state_dir))
     for ev in CLAUDE_HOOK_EVENTS:
-        cmd_str = f"{diodemcp_bin} hook claude {ev} --state-dir {state_dir}"
+        cmd_str = f"{diodemcp_bin} hook claude {ev} --state-dir {quoted_state}"
         ev_list = hooks_dict.get(ev)
         if not isinstance(ev_list, list):
             ev_list = []
@@ -336,8 +341,9 @@ def _patch_simple_command_hooks(
     diodemcp_bin: str,
     state_dir: Path,
 ) -> None:
+    quoted_state = shlex.quote(str(state_dir))
     for ev in events:
-        cmd_str = f"{diodemcp_bin} hook {ide_tag} {ev} --state-dir {state_dir}"
+        cmd_str = f"{diodemcp_bin} hook {ide_tag} {ev} --state-dir {quoted_state}"
         ev_list = hooks_dict.get(ev)
         if not isinstance(ev_list, list):
             ev_list = []

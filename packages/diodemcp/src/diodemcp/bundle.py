@@ -167,6 +167,12 @@ def _verify_tokenizer_special_tokens(
                     f"Tokenizer special token mismatch for {tok_str!r}: "
                     f"manifest expects {expected_id}, tokenizer has {actual_id}"
                 )
+        return
+
+    raise BundleValidationError(
+        f"Invalid tokenizer.json in {tokenizer_path.parent}: "
+        "missing 'model', 'added_tokens', or 'vocab'"
+    )
 
 
 def validate_bundle_dir(bundle_dir: Path, verify_sha256: bool = True) -> BundleManifest:
