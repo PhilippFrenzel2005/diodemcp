@@ -143,17 +143,36 @@ class _FastHookEngineClient:
         )
 
 
+def _find_git_project_root(start_path: str) -> str | None:
+    """Return nearest ancestor directory (including `start_path`) containing `.git`, or `None`."""
+    try:
+        cur = Path(start_path)
+        for cand in (cur, *cur.parents):
+            if (cand / ".git").exists():
+                return str(cand)
+    except OSError:
+        return None
+    return None
+
+
+def _normalize_real_path(raw_path: str) -> str:
+    expanded = os.path.expanduser(raw_path.replace("\x00", ""))
+    return os.path.realpath(os.path.abspath(expanded))
+
+
 def extract_workspace_root(
     payload: Mapping[str, Any] | None,
     *,
     fallback_cwd: Path | str | None = None,
 ) -> str:
-    """Extract canonical `workspace_root` from hook payload (`workspace_root`, `workspace_roots[0]`, `cwd`) (`C5`)."""
-    candidate: str | None = None
+    """Extract canonical `workspace_root` from hook payload (`CLAUDE_PROJECT_DIR`, `workspace_roots[0]`, or nearest `.git` ancestor of `cwd`) (`C5`)."""
+    explicit_root: str | None = None
+    cwd_candidate: str | None = None
+
     if isinstance(payload, Mapping):
         raw_ws = payload.get("workspace_root")
         if isinstance(raw_ws, str) and raw_ws.strip():
-            candidate = raw_ws.strip()
+            explicit_root = raw_ws.strip()
         else:
             ws_roots = payload.get("workspace_roots")
             if isinstance(ws_roots, Sequence) and not isinstance(
@@ -161,23 +180,38 @@ def extract_workspace_root(
             ):
                 for item in ws_roots:
                     if isinstance(item, str) and item.strip():
-                        candidate = item.strip()
+                        explicit_root = item.strip()
                         break
-            if candidate is None:
-                raw_cwd = payload.get("cwd")
-                if isinstance(raw_cwd, str) and raw_cwd.strip():
-                    candidate = raw_cwd.strip()
 
-    if candidate is None and fallback_cwd is not None:
+        if explicit_root is None:
+            env_proj = os.environ.get("CLAUDE_PROJECT_DIR")
+            if isinstance(env_proj, str) and env_proj.strip():
+                explicit_root = env_proj.strip()
+
+        if explicit_root is None:
+            raw_cwd = payload.get("cwd")
+            if isinstance(raw_cwd, str) and raw_cwd.strip():
+                cwd_candidate = raw_cwd.strip()
+
+    if explicit_root is not None:
+        return _normalize_real_path(explicit_root)
+
+    if cwd_candidate is not None:
+        resolved_cwd = _normalize_real_path(cwd_candidate)
+        git_root = _find_git_project_root(resolved_cwd)
+        return git_root if git_root is not None else resolved_cwd
+
+    if fallback_cwd is not None:
         raw_fb = os.fspath(fallback_cwd)
         if isinstance(raw_fb, str) and raw_fb.strip():
-            candidate = raw_fb.strip()
+            return _normalize_real_path(raw_fb.strip())
 
-    if candidate is None:
-        candidate = os.getcwd()
-
-    expanded = os.path.expanduser(candidate.replace("\x00", ""))
-    return os.path.realpath(os.path.abspath(expanded))
+    resolved_proc_cwd = _normalize_real_path(os.getcwd())
+    if isinstance(payload, Mapping):
+        git_root = _find_git_project_root(resolved_proc_cwd)
+        if git_root is not None:
+            return git_root
+    return resolved_proc_cwd
 
 
 def _normalize_ide_name(ide: str) -> str:
@@ -229,7 +263,15 @@ def _collect_strings(node: Any, out: list[str]) -> None:
 
 
 def _extract_tool_response_text(payload: Mapping[str, Any]) -> str:
-    for key in ("tool_response", "tool_output", "output", "response", "result", "content"):
+    for key in (
+        "tool_response",
+        "tool_output",
+        "result_json",
+        "output",
+        "response",
+        "result",
+        "content",
+    ):
         if key in payload and payload[key] is not None:
             val = payload[key]
             if isinstance(val, str):
@@ -246,6 +288,13 @@ def _extract_tool_response_text(payload: Mapping[str, Any]) -> str:
                 return json.dumps(val, ensure_ascii=False)
             except Exception:
                 return str(val)
+    stdio_parts = [
+        str(payload[k])
+        for k in ("stdout", "stderr")
+        if isinstance(payload.get(k), str) and payload[k]
+    ]
+    if stdio_parts:
+        return "\n".join(stdio_parts)
     return ""
 
 
@@ -423,18 +472,28 @@ def emit_fail_closed_deny(
         pass
 
     ide_norm = _normalize_ide_name(ide)
+    event_lower = str(event or "").strip().lower()
     try:
         if ide_norm == "claude":
-            _write_json_line(
-                stdout,
-                {
-                    "hookSpecificOutput": {
-                        "hookEventName": "PreToolUse",
-                        "permissionDecision": "deny",
-                        "permissionDecisionReason": full_msg,
-                    }
-                },
-            )
+            if event_lower in ("pretooluse", "pre_tool_use", "beforetooluse"):
+                _write_json_line(
+                    stdout,
+                    {
+                        "hookSpecificOutput": {
+                            "hookEventName": "PreToolUse",
+                            "permissionDecision": "deny",
+                            "permissionDecisionReason": full_msg,
+                        }
+                    },
+                )
+            else:
+                _write_json_line(
+                    stdout,
+                    {
+                        "decision": "block",
+                        "reason": full_msg,
+                    },
+                )
         elif ide_norm == "cursor":
             _write_json_line(
                 stdout,
@@ -665,22 +724,32 @@ def run_hook(
 
                 action = str(decision.get("action") or "block").lower()
                 if action == "allow":
-                    _write_json_line(
-                        out_stream,
-                        {
-                            "hookSpecificOutput": {
-                                "hookEventName": "PreToolUse",
-                                "permissionDecision": "allow",
-                            }
-                        },
-                    )
+                    updated_input = decision.get("updatedInput")
+                    if isinstance(updated_input, Mapping):
+                        _write_json_line(
+                            out_stream,
+                            {
+                                "hookSpecificOutput": {
+                                    "hookEventName": "PreToolUse",
+                                    "updatedInput": dict(updated_input),
+                                }
+                            },
+                        )
+                    else:
+                        _write_json_line(out_stream, {})
                     return 0
 
+                band = str(decision.get("band") or "critical").lower()
                 is_self_tamper = bool(decision.get("is_self_tamper", False))
                 bypass = permission_mode in ("bypassPermissions", "dontAsk")
                 reason_msg = _format_hook_decision_reason(decision)
 
-                if is_self_tamper or bypass or action == "deny":
+                if (
+                    is_self_tamper
+                    or bypass
+                    or action in ("block", "deny")
+                    or band == "critical"
+                ):
                     err_stream.write(f"[diodemcp] {reason_msg}\n")
                     err_stream.flush()
                     _write_json_line(
@@ -820,6 +889,60 @@ def run_hook(
                         target_path=file_path,
                         written_content=written_text,
                     )
+                _write_json_line(
+                    out_stream,
+                    {
+                        "permission": "allow",
+                        "user_message": "",
+                        "agent_message": "",
+                    },
+                )
+                return 0
+
+            if event_clean == "afterShellExecution":
+                cmd = payload.get("command")
+                if not isinstance(cmd, str):
+                    ti = payload.get("tool_input")
+                    cmd = ti.get("command") if isinstance(ti, Mapping) else ""
+                output_text = _extract_tool_response_text(payload)
+                active_client.record_output(
+                    workspace_root=ws,
+                    server="native",
+                    tool="Bash",
+                    arguments={"command": str(cmd or "")},
+                    output_text=output_text,
+                )
+                _write_json_line(
+                    out_stream,
+                    {
+                        "permission": "allow",
+                        "user_message": "",
+                        "agent_message": "",
+                    },
+                )
+                return 0
+
+            if event_clean == "afterMCPExecution":
+                srv = str(
+                    payload.get("server_name") or payload.get("server") or "mcp"
+                ).strip()
+                tl = str(
+                    payload.get("tool_name") or payload.get("tool") or "unknown"
+                ).strip()
+                raw_in = (
+                    payload.get("tool_input")
+                    if "tool_input" in payload
+                    else payload.get("arguments")
+                )
+                tool_args = _normalize_tool_input(tl, raw_in)
+                output_text = _extract_tool_response_text(payload)
+                active_client.record_output(
+                    workspace_root=ws,
+                    server=srv,
+                    tool=tl,
+                    arguments=tool_args,
+                    output_text=output_text,
+                )
                 _write_json_line(
                     out_stream,
                     {

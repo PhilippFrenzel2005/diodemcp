@@ -45,19 +45,36 @@ import ssl
 import sys
 import threading
 from typing import Any
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
 
-from diodemcp.engine import AsyncEngineClient
-from diodemcp.transport import TransportError, default_transport, sanitize_error_message
+from filelock import FileLock
+
+try:
+    from diodemcp.ipc_client import AsyncEngineClient
+except ImportError:
+    from diodemcp.engine import AsyncEngineClient
+from diodemcp.transport import (
+    TransportError,
+    atomic_write_private_json,
+    default_transport,
+    ensure_private_dir,
+    sanitize_error_message,
+)
 from diodemcp.types import CapabilityFlag
 
 MAX_JSONRPC_LINE_BYTES: int = 64 * 1024 * 1024  # 64 MiB frame ceiling (I14)
 DEFAULT_POPUP_TIMEOUT_SECONDS: float = 120.0
+DEFAULT_HTTP_TIMEOUT_SECONDS: float = 120.0
 ELICIT_ID_PREFIX: str = "diodemcp-"
 _READ_CHUNK_SIZE: int = 65536
+_MAX_IPC_LEAF_BYTES: int = 512 * 1024
+_IPC_HEAD_BYTES: int = 384 * 1024
+_IPC_TAIL_BYTES: int = 128 * 1024
+_MAX_IPC_TOTAL_BYTES: int = 4 * 1024 * 1024
 
 CHOICE_LABELS: dict[str, str] = {
     "block": "Block (Recommended)",
@@ -72,12 +89,13 @@ _PARTIAL_JSON_ID_RE = re.compile(
     rb'"id"\s*:\s*("(?:[^"\\]|\\.)*"|-?\d+|null)'
 )
 
-# Opus I1 / I6: Suspicious prompt-injection and secret-exfiltration patterns in `tools/list` metadata.
+# Opus I1 / I6: Suspicious prompt-injection and secret-exfiltration patterns in list metadata.
 _TOOL_POISONING_RE = re.compile(
     r"(?:"
     r"ignore\s+(?:all\s+)?(?:previous|prior|above|system)\s+instructions"
     r"|disregard\s+(?:all\s+)?(?:previous|prior|above)"
-    r"|<system>|</system>|<\|intent\|>|<\|missing_intent\|>|<\|im_start\|>|\[inst\]"
+    r"|<important>|</important>|<system>|</system>|<\|intent\|>|<\|missing_intent\|>|<\|im_start\|>|\[inst\]"
+    r"|~/\.cursor/mcp\.json|~/\.claude\b|~/\.diodemcp\b"
     r"|\b(?:important|critical|urgent)\s*:\s*(?:ignore|before|first|always|do\s+not|never)\b"
     r"|\b(?:do\s+not|don't|never)\s+(?:tell|inform|mention|show|reveal)\s+(?:to\s+)?(?:the\s+)?user\b"
     r"|\b(?:before|prior\s+to)\s+(?:calling|using|invoking)\s+this\s+tool\b"
@@ -87,6 +105,55 @@ _TOOL_POISONING_RE = re.compile(
     r")",
     re.IGNORECASE,
 )
+
+
+def _normalize_for_screening(text: str) -> str:
+    """Normalize NFKC and strip Unicode `Cf` format/zero-width characters before regex screening."""
+    stripped = "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
+    nfkc = unicodedata.normalize("NFKC", stripped)
+    return "".join(ch for ch in nfkc if unicodedata.category(ch) != "Cf")
+
+
+def _cap_ipc_string(
+    text: str,
+    *,
+    max_bytes: int = _MAX_IPC_LEAF_BYTES,
+    head_bytes: int = _IPC_HEAD_BYTES,
+    tail_bytes: int = _IPC_TAIL_BYTES,
+) -> str:
+    """Cap oversized string values cleanly before 16 MiB IPC transport while preserving head+tail+SHA-256."""
+    raw = text.encode("utf-8", errors="replace")
+    if len(raw) <= max_bytes:
+        return text
+    digest = hashlib.sha256(raw).hexdigest()
+    head = raw[:head_bytes].decode("utf-8", errors="ignore")
+    tail = raw[-tail_bytes:].decode("utf-8", errors="ignore") if tail_bytes > 0 else ""
+    return f"{head}\n[TRUNCATED sha256={digest} orig_bytes={len(raw)}]\n{tail}"
+
+
+def _cap_ipc_value(value: Any, budget: list[int]) -> Any:
+    if isinstance(value, str):
+        raw_len = len(value.encode("utf-8", errors="replace"))
+        if budget[0] <= 0:
+            return _cap_ipc_string(value, max_bytes=16384, head_bytes=8192, tail_bytes=4096)
+        capped = _cap_ipc_string(value)
+        capped_len = len(capped.encode("utf-8", errors="replace")) if capped is not value else raw_len
+        budget[0] -= capped_len
+        return capped
+    if isinstance(value, Mapping):
+        return {k: _cap_ipc_value(v, budget) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_cap_ipc_value(item, budget) for item in value]
+    if isinstance(value, tuple):
+        return [_cap_ipc_value(item, budget) for item in value]
+    return value
+
+
+def _cap_ipc_arguments(args: Mapping[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(args, Mapping):
+        return {}
+    budget = [_MAX_IPC_TOTAL_BYTES]
+    return {str(k): _cap_ipc_value(v, budget) for k, v in args.items()}
 
 
 def validate_streamable_http_url(url: str) -> str:
@@ -562,13 +629,75 @@ class _McpShimCore:
         self._pending_elicitations: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._inflight_client_requests: dict[Any, _InflightClientRequest] = {}
         self._client_tasks: set[asyncio.Task[Any]] = set()
-        self._tool_description_hashes: dict[str, str] = {}
+        self._tool_pins_path: Path = self.state_dir / "tool_pins.json"
+        self._tool_description_hashes: dict[str, str] = self._load_persisted_pins()
 
         # Remap table when an upstream server originates a request with a colliding `diodemcp-` id:
         #   remapped_id -> original_upstream_id
         self._remapped_upstream_server_ids: dict[str, Any] = {}
         # Track upstream `sampling/createMessage` request IDs so client completions are screened (`I1`):
         self._pending_upstream_sampling_ids: dict[Any, dict[str, Any]] = {}
+
+    def _load_persisted_pins(self) -> dict[str, str]:
+        if self._tool_pins_path.is_symlink() or not self._tool_pins_path.is_file():
+            return {}
+        try:
+            raw = self._tool_pins_path.read_text(encoding="utf-8")
+            parsed = json.loads(raw) if raw.strip() else {}
+        except Exception:
+            return {}
+        if not isinstance(parsed, dict):
+            return {}
+        srv_pins = parsed.get(self.server_name)
+        if not isinstance(srv_pins, Mapping):
+            return {}
+        return {
+            str(k): str(v)
+            for k, v in srv_pins.items()
+            if isinstance(k, str) and isinstance(v, str)
+        }
+
+    def _persist_new_pins(self, new_pins: Mapping[str, str]) -> None:
+        if not new_pins:
+            return
+        try:
+            ensure_private_dir(self.state_dir)
+            lock = FileLock(str(self.state_dir / "tool_pins.json.lock"), timeout=5.0)
+            with lock:
+                existing: dict[str, Any] = {}
+                if self._tool_pins_path.is_file() and not self._tool_pins_path.is_symlink():
+                    try:
+                        raw = self._tool_pins_path.read_text(encoding="utf-8")
+                        loaded = json.loads(raw) if raw.strip() else {}
+                        if isinstance(loaded, dict):
+                            existing = loaded
+                    except Exception:
+                        existing = {}
+                srv_map = existing.get(self.server_name)
+                if not isinstance(srv_map, dict):
+                    srv_map = {}
+                srv_map.update({str(k): str(v) for k, v in new_pins.items()})
+                existing[self.server_name] = srv_map
+                atomic_write_private_json(self._tool_pins_path, existing)
+        except Exception:
+            pass
+
+    async def _record_output_capped(
+        self,
+        *,
+        tool: str,
+        arguments: Mapping[str, Any],
+        output_text: str,
+        extra_flags: int,
+    ) -> dict[str, Any]:
+        return await self.engine_client.record_output(
+            workspace_root=self.workspace_root,
+            server=self.server_name,
+            tool=tool,
+            arguments=_cap_ipc_arguments(arguments),
+            output_text=_cap_ipc_string(str(output_text or "")),
+            extra_flags=extra_flags,
+        )
 
     async def write_stdout_json(self, payload: dict[str, Any]) -> None:
         """Serialize `payload` as a single JSON-RPC line and write to guarded protocol `stdout`."""
@@ -924,12 +1053,13 @@ class _McpShimCore:
         inflight: _InflightClientRequest,
     ) -> tuple[bool, dict[str, Any], dict[str, Any] | None]:
         """Evaluate proposed tool call via `AsyncEngineClient` and run popup or headless fail-closed gate."""
+        capped_args = _cap_ipc_arguments(tool_args)
         try:
             decision = await self.engine_client.evaluate_call(
                 workspace_root=self.workspace_root,
                 server=self.server_name,
                 tool=tool_name,
-                arguments=tool_args,
+                arguments=capped_args,
                 client_kind="mcp_shim",
                 client_supports_popup=self.client_supports_popup,
             )
@@ -968,6 +1098,202 @@ class _McpShimCore:
             ),
         )
 
+    def _screen_metadata_entries(
+        self,
+        entries: list[Any],
+        *,
+        kind: str,
+    ) -> tuple[list[str], dict[str, str]]:
+        suspicious_entries: list[str] = []
+        new_pins: dict[str, str] = {}
+
+        for entry in entries:
+            if not isinstance(entry, Mapping):
+                continue
+            if kind == "tool":
+                item_name = str(entry.get("name") or "")
+                pin_key = f"tool:{item_name}"
+                canonical_obj = {
+                    "name": entry.get("name"),
+                    "title": entry.get("title"),
+                    "description": entry.get("description"),
+                    "inputSchema": entry.get("inputSchema"),
+                    "outputSchema": entry.get("outputSchema"),
+                    "annotations": entry.get("annotations"),
+                }
+                text_parts: list[str] = [
+                    item_name,
+                    str(entry.get("title") or ""),
+                    str(entry.get("description") or ""),
+                ]
+                _extract_content_blocks_text(entry.get("inputSchema"), text_parts)
+                _extract_content_blocks_text(entry.get("outputSchema"), text_parts)
+                _extract_content_blocks_text(entry.get("annotations"), text_parts)
+            elif kind == "prompt":
+                item_name = str(entry.get("name") or "")
+                pin_key = f"prompt:{item_name}"
+                canonical_obj = {
+                    "name": entry.get("name"),
+                    "title": entry.get("title"),
+                    "description": entry.get("description"),
+                    "arguments": entry.get("arguments"),
+                }
+                text_parts = [
+                    item_name,
+                    str(entry.get("title") or ""),
+                    str(entry.get("description") or ""),
+                ]
+                _extract_content_blocks_text(entry.get("arguments"), text_parts)
+            else:
+                item_name = str(entry.get("uri") or entry.get("uriTemplate") or entry.get("name") or "")
+                pin_key = f"resource:{item_name}"
+                canonical_obj = {
+                    "uri": entry.get("uri"),
+                    "uriTemplate": entry.get("uriTemplate"),
+                    "name": entry.get("name"),
+                    "title": entry.get("title"),
+                    "description": entry.get("description"),
+                    "mimeType": entry.get("mimeType"),
+                    "annotations": entry.get("annotations"),
+                }
+                text_parts = [
+                    item_name,
+                    str(entry.get("name") or ""),
+                    str(entry.get("title") or ""),
+                    str(entry.get("description") or ""),
+                ]
+                _extract_content_blocks_text(entry.get("annotations"), text_parts)
+
+            try:
+                canonical_json = json.dumps(
+                    canonical_obj,
+                    sort_keys=True,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            except Exception:
+                canonical_json = "\n".join(text_parts)
+
+            digest = hashlib.sha256(
+                canonical_json.encode("utf-8", errors="replace")
+            ).hexdigest()
+            prev_digest = self._tool_description_hashes.get(pin_key)
+            if prev_digest is None:
+                self._tool_description_hashes[pin_key] = digest
+                new_pins[pin_key] = digest
+            is_rug_pull = prev_digest is not None and prev_digest != digest
+
+            raw_combined = "\n".join(p for p in text_parts if p)
+            normalized_combined = _normalize_for_screening(raw_combined)
+            is_poisoned = _TOOL_POISONING_RE.search(normalized_combined) is not None
+
+            if is_poisoned or is_rug_pull:
+                tag = "rug_pull" if is_rug_pull else f"poisoned_{kind}"
+                suspicious_entries.append(
+                    f"[{self.server_name}:{item_name}:{tag}] {normalized_combined}".strip()
+                )
+
+        return suspicious_entries, new_pins
+
+    async def process_upstream_server_message(
+        self, msg: dict[str, Any]
+    ) -> tuple[bool, dict[str, Any]]:
+        """Screen & record server-initiated requests/notifications (`sampling/createMessage`, `elicitation/create`) before host forwarding."""
+        up_method = str(msg.get("method") or "")
+        if "id" in msg:
+            orig_id = msg["id"]
+            if isinstance(orig_id, str) and orig_id.startswith(ELICIT_ID_PREFIX):
+                safe_id: Any = f"upstream-{uuid.uuid4()}"
+                self._remapped_upstream_server_ids[str(safe_id)] = orig_id
+                msg = {**msg, "id": safe_id}
+            else:
+                safe_id = orig_id
+
+            if up_method == "sampling/createMessage":
+                self._pending_upstream_sampling_ids[safe_id] = msg
+
+        if up_method == "sampling/createMessage":
+            params_obj = msg.get("params")
+            if isinstance(params_obj, Mapping):
+                parts: list[str] = []
+                sys_prompt = params_obj.get("systemPrompt")
+                if isinstance(sys_prompt, str) and sys_prompt:
+                    parts.append(sys_prompt)
+                _extract_content_blocks_text(params_obj.get("messages"), parts)
+                sampling_text = "\n".join(p for p in parts if p)
+                if sampling_text:
+                    try:
+                        await self._record_output_capped(
+                            tool="sampling/createMessage",
+                            arguments={"method": "sampling/createMessage"},
+                            output_text=sampling_text,
+                            extra_flags=CapabilityFlag.READS_UNTRUSTED,
+                        )
+                    except Exception:
+                        return False, msg
+
+        if up_method == "elicitation/create":
+            params_obj = msg.get("params")
+            if isinstance(params_obj, Mapping):
+                orig_text = str(params_obj.get("message") or "")
+                if orig_text:
+                    try:
+                        await self._record_output_capped(
+                            tool="elicitation/create",
+                            arguments={"method": "elicitation/create"},
+                            output_text=orig_text,
+                            extra_flags=CapabilityFlag.READS_UNTRUSTED,
+                        )
+                    except Exception:
+                        return False, msg
+                prefixed = f"[from server {self.server_name}] {orig_text}"
+                msg = {
+                    **msg,
+                    "params": {**dict(params_obj), "message": prefixed},
+                }
+
+        return True, msg
+
+    async def screen_host_response_to_upstream(
+        self, msg: dict[str, Any]
+    ) -> tuple[bool, dict[str, Any]]:
+        """Remap upstream ID if needed and screen host `sampling/createMessage` completions as outbound sink."""
+        resp_id = msg.get("id")
+        if isinstance(resp_id, str) and resp_id in self._remapped_upstream_server_ids:
+            orig_up_id = self._remapped_upstream_server_ids.pop(resp_id)
+        else:
+            orig_up_id = resp_id
+        out_client_resp = {**msg, "id": orig_up_id}
+
+        if resp_id in self._pending_upstream_sampling_ids:
+            self._pending_upstream_sampling_ids.pop(resp_id, None)
+            result_obj = msg.get("result")
+            comp_parts: list[str] = []
+            _extract_content_blocks_text(result_obj, comp_parts)
+            completion_text = "\n".join(comp_parts)
+            dummy_inflight = _InflightClientRequest(
+                request_id=orig_up_id, method="sampling/createMessage"
+            )
+            allowed, _eff, _err = await self.evaluate_and_gate_call(
+                tool_name="sampling.send_response",
+                tool_args={
+                    "response": result_obj,
+                    "body": completion_text,
+                    "server": self.server_name,
+                },
+                inflight=dummy_inflight,
+            )
+            if not allowed:
+                return False, {
+                    "jsonrpc": "2.0",
+                    "id": orig_up_id,
+                    "error": {
+                        "code": -32603,
+                        "message": "Blocked by DiodeMCP: sampling.send_response completion denied",
+                    },
+                }
+        return True, out_client_resp
+
     async def inspect_and_record_upstream_response(
         self,
         *,
@@ -976,54 +1302,99 @@ class _McpShimCore:
         forwarded_args: dict[str, Any],
         response_msg: dict[str, Any],
     ) -> dict[str, Any]:
-        """Enforce `I6` synchronous `ack`-before-forward on `tools/call`, `resources/read`, `prompts/get`, and `tools/list`."""
+        """Enforce `I6` synchronous `ack`-before-forward on `tools/call`, `resources/read`, `prompts/get`, errors, and `*/list`."""
         res_obj = response_msg.get("result")
         if not isinstance(res_obj, Mapping):
-            return response_msg
-
-        if method == "tools/list":
-            tools_list = res_obj.get("tools")
-            if isinstance(tools_list, list):
-                suspicious_entries: list[str] = []
-                for tool_entry in tools_list:
-                    if not isinstance(tool_entry, Mapping):
-                        continue
-                    t_name = str(tool_entry.get("name") or "")
-                    t_desc = str(tool_entry.get("description") or "")
+            err_obj = response_msg.get("error")
+            if isinstance(err_obj, Mapping) and method in (
+                "tools/call",
+                "resources/read",
+                "prompts/get",
+            ):
+                err_msg = str(err_obj.get("message") or "")
+                err_data = err_obj.get("data")
+                err_data_str = ""
+                if err_data is not None:
                     try:
-                        schema_str = json.dumps(
-                            tool_entry.get("inputSchema") or {},
-                            sort_keys=True,
-                            separators=(",", ":"),
+                        err_data_str = json.dumps(
+                            err_data, ensure_ascii=False, separators=(",", ":")
                         )
                     except Exception:
-                        schema_str = ""
-                    combined_meta = f"{t_name}\n{t_desc}\n{schema_str}"
-                    digest = hashlib.sha256(
-                        combined_meta.encode("utf-8", errors="replace")
-                    ).hexdigest()
-
-                    prev_digest = self._tool_description_hashes.get(t_name)
-                    self._tool_description_hashes[t_name] = digest
-                    is_rug_pull = prev_digest is not None and prev_digest != digest
-                    is_poisoned = _TOOL_POISONING_RE.search(combined_meta) is not None
-
-                    if is_poisoned or is_rug_pull:
-                        tag = "rug_pull" if is_rug_pull else "poisoned_description"
-                        suspicious_entries.append(
-                            f"[{self.server_name}:{t_name}:{tag}] {t_desc} {schema_str}".strip()
+                        err_data_str = str(err_data)
+                err_text = "\n".join(p for p in (err_msg, err_data_str) if p)
+                if err_text:
+                    if method == "tools/call":
+                        tool_name = str(request_params.get("name") or "unknown_tool")
+                        extra_flags = CapabilityFlag.READS_UNTRUSTED
+                        args_for_record = forwarded_args
+                    elif method == "resources/read":
+                        uri_val = str(request_params.get("uri") or "")
+                        tool_name = "read_resource"
+                        extra_flags = (
+                            CapabilityFlag.READS_PRIVATE | CapabilityFlag.READS_UNTRUSTED
                         )
+                        args_for_record = {"uri": uri_val, "path": uri_val}
+                    else:
+                        prompt_name = str(request_params.get("name") or "prompt")
+                        tool_name = f"prompt:{prompt_name}"
+                        extra_flags = CapabilityFlag.READS_UNTRUSTED
+                        args_for_record = dict(request_params)
+
+                    try:
+                        await self._record_output_capped(
+                            tool=tool_name,
+                            arguments=args_for_record,
+                            output_text=err_text,
+                            extra_flags=extra_flags,
+                        )
+                    except Exception as exc:
+                        if method == "tools/call":
+                            return _build_mcp_tool_error_response(
+                                response_msg.get("id"),
+                                banner="🛑 CRITICAL DiodeMCP Alert: Failed to persist error taint before forwarding; failing closed.",
+                                detail=sanitize_error_message(exc),
+                            )
+                        return {
+                            "jsonrpc": "2.0",
+                            "id": response_msg.get("id"),
+                            "error": {
+                                "code": -32603,
+                                "message": (
+                                    f"Blocked by DiodeMCP: failed to persist {method} error taint "
+                                    f"before forwarding; failing closed ({sanitize_error_message(exc)})"
+                                ),
+                            },
+                        }
+            return response_msg
+
+        if method in ("tools/list", "prompts/list", "resources/list", "resources/templates/list"):
+            if method == "tools/list":
+                list_key, kind, marker_tool = "tools", "tool", "__tools_list__"
+            elif method == "prompts/list":
+                list_key, kind, marker_tool = "prompts", "prompt", "__prompts_list__"
+            elif method == "resources/list":
+                list_key, kind, marker_tool = "resources", "resource", "__resources_list__"
+            else:
+                list_key, kind, marker_tool = (
+                    "resourceTemplates",
+                    "resource",
+                    "__resources_templates_list__",
+                )
+
+            raw_entries = res_obj.get(list_key)
+            if isinstance(raw_entries, list):
+                suspicious_entries, new_pins = self._screen_metadata_entries(
+                    raw_entries, kind=kind
+                )
+                if new_pins:
+                    self._persist_new_pins(new_pins)
 
                 if suspicious_entries:
                     joined_suspicious = "\n".join(suspicious_entries)
                     try:
-                        await self.engine_client.record_output(
-                            workspace_root=self.workspace_root,
-                            server=self.server_name,
-                            tool="__tools_list__",
-                            arguments={
-                                "source_tool": f"{self.server_name}:__tools_list__"
-                            },
+                        await self._record_output_capped(
+                            tool=marker_tool,
+                            arguments={"source_tool": f"{self.server_name}:{marker_tool}"},
                             output_text=joined_suspicious,
                             extra_flags=CapabilityFlag.READS_UNTRUSTED,
                         )
@@ -1034,7 +1405,7 @@ class _McpShimCore:
                             "error": {
                                 "code": -32603,
                                 "message": (
-                                    "Blocked by DiodeMCP: failed to record poisoned tools/list "
+                                    f"Blocked by DiodeMCP: failed to record poisoned {method} "
                                     f"taint ({sanitize_error_message(exc)})"
                                 ),
                             },
@@ -1060,9 +1431,7 @@ class _McpShimCore:
 
             if extracted_text or method == "tools/call":
                 try:
-                    await self.engine_client.record_output(
-                        workspace_root=self.workspace_root,
-                        server=self.server_name,
+                    await self._record_output_capped(
                         tool=tool_name,
                         arguments=args_for_record,
                         output_text=extracted_text,
@@ -1109,7 +1478,7 @@ def _send_http_jsonrpc_sync(
     static_headers: Mapping[str, str],
     session_id: str | None,
     payload: dict[str, Any],
-    timeout_s: float = 30.0,
+    timeout_s: float = DEFAULT_HTTP_TIMEOUT_SECONDS,
 ) -> tuple[int, dict[str, str], bytes]:
     """Execute one Streamable-HTTP POST request synchronously off the event loop."""
     validated_url = validate_streamable_http_url(url)
@@ -1264,33 +1633,23 @@ async def async_run_stdio_shim(
                         continue
 
                     # Case 2: Upstream server->client request or notification
-                    up_method = str(msg.get("method") or "")
-                    if "id" in msg:
-                        orig_id = msg["id"]
-                        # I3 / I14: Prevent upstream server from colliding with `diodemcp-` IDs!
-                        if isinstance(orig_id, str) and orig_id.startswith(ELICIT_ID_PREFIX):
-                            safe_id = f"upstream-{uuid.uuid4()}"
-                            core._remapped_upstream_server_ids[safe_id] = orig_id
-                            msg = {**msg, "id": safe_id}
-                        else:
-                            safe_id = orig_id
-
-                        # I1: Track `sampling/createMessage` so client completion is screened before forwarding!
-                        if up_method == "sampling/createMessage":
-                            core._pending_upstream_sampling_ids[safe_id] = msg
-
-                    # I3: Prefix upstream `elicitation/create` messages so they can never spoof DiodeMCP!
-                    if up_method == "elicitation/create":
-                        params_obj = msg.get("params")
-                        if isinstance(params_obj, Mapping):
-                            orig_text = str(params_obj.get("message") or "")
-                            prefixed = f"[from server {core.server_name}] {orig_text}"
-                            msg = {
-                                **msg,
-                                "params": {**dict(params_obj), "message": prefixed},
-                            }
-
-                    await core.write_stdout_json(msg)
+                    ok_forward, processed_msg = await core.process_upstream_server_message(
+                        msg
+                    )
+                    if not ok_forward:
+                        if "id" in msg:
+                            await _write_child_stdin(
+                                {
+                                    "jsonrpc": "2.0",
+                                    "id": msg["id"],
+                                    "error": {
+                                        "code": -32603,
+                                        "message": "Blocked by DiodeMCP: failed to record server-initiated prompt taint",
+                                    },
+                                }
+                            )
+                        continue
+                    await core.write_stdout_json(processed_msg)
             finally:
                 for fut in list(pending_upstream.values()):
                     if not fut.done():
@@ -1482,37 +1841,10 @@ async def async_run_stdio_shim(
                         # NEVER forward `diodemcp-*` responses to upstream!
                         continue
 
-                    orig_up_id = core._remapped_upstream_server_ids.pop(
-                        str(resp_id), resp_id
+                    _allowed_resp, outbound_resp = await core.screen_host_response_to_upstream(
+                        msg
                     )
-                    out_client_resp = {**msg, "id": orig_up_id}
-
-                    # I1: If this is a client response to upstream `sampling/createMessage`,
-                    # evaluate it as an outbound sink toward `server_name` before forwarding!
-                    if resp_id in core._pending_upstream_sampling_ids:
-                        core._pending_upstream_sampling_ids.pop(resp_id, None)
-                        dummy_inflight = _InflightClientRequest(
-                            request_id=orig_up_id, method="sampling/createMessage"
-                        )
-                        allowed, _eff, _err = await core.evaluate_and_gate_call(
-                            tool_name="sampling/createMessage",
-                            tool_args={"response": msg.get("result")},
-                            inflight=dummy_inflight,
-                        )
-                        if not allowed:
-                            await _write_child_stdin(
-                                {
-                                    "jsonrpc": "2.0",
-                                    "id": orig_up_id,
-                                    "error": {
-                                        "code": -32603,
-                                        "message": "Blocked by DiodeMCP: sampling/createMessage completion denied",
-                                    },
-                                }
-                            )
-                            continue
-
-                    await _write_child_stdin(out_client_resp)
+                    await _write_child_stdin(outbound_resp)
                     continue
 
                 method = str(msg.get("method") or "")
@@ -1576,6 +1908,7 @@ async def async_run_http_bridge_shim(
     *,
     workspace_root: Path | None = None,
     popup_timeout_s: float = DEFAULT_POPUP_TIMEOUT_SECONDS,
+    http_timeout_s: float = DEFAULT_HTTP_TIMEOUT_SECONDS,
     stdin_stream: asyncio.StreamReader | None = None,
     stdout_write: Callable[[bytes], Awaitable[None] | None] | None = None,
     engine_client: AsyncEngineClient | None = None,
@@ -1583,6 +1916,9 @@ async def async_run_http_bridge_shim(
     """Run hardened MCP Streamable-HTTP bridge shim asynchronously (`I6`, `I14`, `I4`, `C4`)."""
     validated_url = validate_streamable_http_url(url)
     static_headers = dict(headers or {})
+    effective_http_timeout = float(http_timeout_s)
+    if effective_http_timeout <= 0.0:
+        raise ValueError("http_timeout_s must be > 0")
 
     cleanup_stdin: Callable[[], None] | None = None
     with _protocol_stdout_guard(stdout_write) as guarded_stdout_write:
@@ -1614,6 +1950,7 @@ async def async_run_http_bridge_shim(
                 static_headers=static_headers,
                 session_id=cur_session,
                 payload=outbound_msg,
+                timeout_s=effective_http_timeout,
             )
 
             new_sid = resp_headers.get("mcp-session-id")
@@ -1746,23 +2083,11 @@ async def async_run_http_bridge_shim(
                 for item in resp_messages:
                     if "method" in item:
                         # Server-initiated notification or request inside SSE stream
-                        up_method = str(item.get("method") or "")
-                        if up_method == "elicitation/create" and isinstance(
-                            item.get("params"), Mapping
-                        ):
-                            orig_text = str(item["params"].get("message") or "")
-                            item = {
-                                **item,
-                                "params": {
-                                    **dict(item["params"]),
-                                    "message": f"[from server {core.server_name}] {orig_text}",
-                                },
-                            }
-                        if isinstance(item.get("id"), str) and str(
-                            item["id"]
-                        ).startswith(ELICIT_ID_PREFIX):
-                            item = {**item, "id": f"upstream-{uuid.uuid4()}"}
-                        await core.write_stdout_json(item)
+                        ok_forward, processed_item = (
+                            await core.process_upstream_server_message(item)
+                        )
+                        if ok_forward:
+                            await core.write_stdout_json(processed_item)
                     elif item.get("id") == req_id or matched_resp is None:
                         matched_resp = item
 
@@ -1785,6 +2110,26 @@ async def async_run_http_bridge_shim(
             finally:
                 if has_id:
                     core._inflight_client_requests.pop(req_id, None)
+
+        async def _handle_host_response_to_upstream(msg: dict[str, Any]) -> None:
+            try:
+                _allowed_resp, outbound_resp = (
+                    await core.screen_host_response_to_upstream(msg)
+                )
+                extra_msgs = await _post_upstream(outbound_resp)
+                for item in extra_msgs:
+                    if "method" in item:
+                        ok_forward, processed_item = (
+                            await core.process_upstream_server_message(item)
+                        )
+                        if ok_forward:
+                            await core.write_stdout_json(processed_item)
+            except Exception as exc:
+                sys.stderr.write(
+                    f"[diodemcp:{core.server_name}] Failed to forward host response to HTTP upstream: "
+                    f"{sanitize_error_message(exc)}\n"
+                )
+                sys.stderr.flush()
 
         host_reader = _BoundedJsonLineReader(stdin_stream)
         try:
@@ -1841,6 +2186,12 @@ async def async_run_http_bridge_shim(
                         elicit_fut = core._pending_elicitations.get(resp_id)
                         if elicit_fut is not None and not elicit_fut.done():
                             elicit_fut.set_result(msg)
+                        continue
+                    resp_task = asyncio.create_task(
+                        _handle_host_response_to_upstream(msg)
+                    )
+                    core._client_tasks.add(resp_task)
+                    resp_task.add_done_callback(core._client_tasks.discard)
                     continue
 
                 method = str(msg.get("method") or "")
@@ -1899,6 +2250,7 @@ def run_http_bridge_shim(
     *,
     workspace_root: Path | None = None,
     popup_timeout_s: float = DEFAULT_POPUP_TIMEOUT_SECONDS,
+    http_timeout_s: float = DEFAULT_HTTP_TIMEOUT_SECONDS,
 ) -> int:
     """Synchronous entrypoint for MCP Streamable-HTTP bridge shim (`R4`, `I6`, `I14`, `C4`)."""
     return asyncio.run(
@@ -1909,6 +2261,7 @@ def run_http_bridge_shim(
             state_dir=Path(state_dir),
             workspace_root=workspace_root,
             popup_timeout_s=popup_timeout_s,
+            http_timeout_s=http_timeout_s,
         )
     )
 
@@ -1922,6 +2275,11 @@ def _main_shim_cli(argv: Sequence[str] | None = None) -> int:
         "--popup-timeout",
         type=float,
         default=DEFAULT_POPUP_TIMEOUT_SECONDS,
+    )
+    parser.add_argument(
+        "--http-timeout",
+        type=float,
+        default=DEFAULT_HTTP_TIMEOUT_SECONDS,
     )
     parser.add_argument("--url", type=str, default=None)
     parser.add_argument(
@@ -1950,6 +2308,7 @@ def _main_shim_cli(argv: Sequence[str] | None = None) -> int:
             args.state_dir,
             workspace_root=args.workspace_root,
             popup_timeout_s=args.popup_timeout,
+            http_timeout_s=args.http_timeout,
         )
 
     cmd = list(args.command)
