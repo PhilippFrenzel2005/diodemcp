@@ -32,13 +32,16 @@ from diodemodel.contract import (
     BundleManifest,
 )
 from diodemodel.mutators import (
+    ALL_THREAT_CATEGORIES,
     MAX_FLAT_ARGS,
     MAX_PCHUNKS,
     NONE_PCHUNK_IDX,
     JevTrainingPair,
     SpanItem,
     ThreatCategory,
+    _StratifiedBernoulliGate,
     _map_benign_dev_category,
+    apply_missing_intent_mask,
     flatten_call_arguments,
     generate_programmatic_pairs,
 )
@@ -47,7 +50,12 @@ from diodemodel.parse_seeds import (
     is_holdout_benchmark_source,
     load_permissive_seeds,
 )
-from diodemodel.synth_vllm import iter_matched_vllm_pairs, scrub_pair_real_secrets
+from diodemodel.synth_vllm import (
+    CompletionBatchFn,
+    get_or_create_vllm_completion_fn,
+    iter_matched_vllm_pairs,
+    scrub_pair_real_secrets,
+)
 from diodemodel.tokenizer_builder import build_jev_tokenizer, sanitize_untrusted_delimiters
 
 DEFAULT_INFERENCE_BUCKET: int = 512
@@ -73,13 +81,18 @@ _HEX_CANDIDATE_RE = re.compile(r"[0-9a-fA-F]{16,}")
 _PCT_ALNUM_RE = re.compile(r"%[3-7][0-9a-fA-F]")
 
 _SYNTH_SECRET_AUDIT_RE = re.compile(
-    r"\b(?:sk_synth|sk_test_synth|gh_synth_tok|github_pat_synth|SYNTH_AWS_KEY|SYNTH_GCP_APIKEY|"
+    r"\b(?:sk_synth|sk_test_synth|sk_openai_synth|hf_synth_tok|whsec_synth|jwt_synth_tok|"
+    r"holdout_synth|gh_synth_tok|github_pat_synth|SYNTH_AWS_KEY|SYNTH_GCP_APIKEY|"
     r"aws_synth_secret|k8s_synth_bearer|npm_synth_tok|IBAN_SYNTH|OPENSSH_SYNTH_TEST_KEY|"
     r"gcp_synth_keyid|internal_wiki_synth_tok|xox_synth_tok|agentdojo_synth_code|mcpsec_synth_tok)"
     r"_[A-Za-z0-9_]{6,}\b"
 )
 _REAL_SECRET_AUDIT_RE = re.compile(
     r"(?:\bsk_live_[A-Za-z0-9_]{4,}\b"
+    r"|\bsk-(?:proj-|svcacct-|live-)?[A-Za-z0-9_-]{20,}\b"
+    r"|\bhf_[A-Za-z0-9]{24,}\b"
+    r"|\bwhsec_[A-Za-z0-9_]{12,}\b"
+    r"|\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"
     r"|\bgh[pousr]_[A-Za-z0-9_]{10,}\b"
     r"|\bgithub_pat_[A-Za-z0-9_]{10,}\b"
     r"|\bAKIA[0-9A-Z]{12,}\b"
@@ -634,20 +647,38 @@ class JevDatasetPacker:
         arg_positions[max_args] = none_pos
         arg_valid_mask[max_args] = True
 
-        # Map original attribution targets onto packed active pointer indices
-        if attributed_pchunk_idx == max_pchunks or attributed_pchunk_idx not in selected_span_indices:
-            target_src_idx = max_pchunks
-        else:
-            target_src_idx = selected_span_indices.index(attributed_pchunk_idx)
+        # Map original attribution targets onto packed active pointer indices and synchronize labels
+        # if extreme truncation evicted the attributed span or argument from the visible window.
+        eff_y_enc = float(y_enc)
+        eff_y_sem = float(y_sem)
+        eff_y_hijack = float(y_hijack)
 
-        if attributed_arg_key is None:
+        if max(eff_y_enc, eff_y_sem) < 0.5:
+            target_src_idx = max_pchunks
+        elif attributed_pchunk_idx != max_pchunks and attributed_pchunk_idx in selected_span_indices:
+            target_src_idx = selected_span_indices.index(attributed_pchunk_idx)
+        else:
+            target_src_idx = max_pchunks
+            eff_y_enc = 0.0
+            eff_y_sem = 0.0
+
+        if max(eff_y_enc, eff_y_sem, eff_y_hijack) < 0.5 or attributed_arg_key is None:
             target_arg_idx = max_args
+            if max(eff_y_enc, eff_y_sem, eff_y_hijack) >= 0.5:
+                eff_y_enc = 0.0
+                eff_y_sem = 0.0
+                eff_y_hijack = 0.0
+                target_src_idx = max_pchunks
         elif attributed_arg_key in active_arg_keys:
             target_arg_idx = active_arg_keys.index(attributed_arg_key)
         elif attributed_arg_key in overflow_arg_keys and len(active_arg_keys) == max_args:
             target_arg_idx = max_args - 1
         else:
             target_arg_idx = max_args
+            target_src_idx = max_pchunks
+            eff_y_enc = 0.0
+            eff_y_sem = 0.0
+            eff_y_hijack = 0.0
 
         return PackedJevRow(
             input_ids=ids,
@@ -665,9 +696,9 @@ class JevDatasetPacker:
             selected_span_indices=tuple(selected_span_indices),
             selected_span_ids=tuple(selected_span_ids),
             active_arg_keys=tuple(active_arg_keys),
-            y_enc=float(y_enc),
-            y_sem=float(y_sem),
-            y_hijack=float(y_hijack),
+            y_enc=eff_y_enc,
+            y_sem=eff_y_sem,
+            y_hijack=eff_y_hijack,
             target_src_idx=target_src_idx,
             target_arg_idx=target_arg_idx,
         )
@@ -870,6 +901,112 @@ def compute_group_key(repo_or_source: str, seed_id: str) -> str:
     return "_".join(parts[:3]) if len(parts) >= 3 else seed_id.strip().lower()
 
 
+@dataclass(frozen=True)
+class StratifiedSeedPartition:
+    """Category-stratified, strictly group-disjoint seed partition across train/val/eval splits."""
+
+    train_seeds: list[SeedRecord]
+    val_seeds: list[SeedRecord]
+    eval_dev_seeds: list[SeedRecord]
+    holdout_bench_seeds: list[SeedRecord]
+    train_groups: tuple[str, ...]
+    val_groups: tuple[str, ...]
+    eval_dev_groups: tuple[str, ...]
+
+
+def partition_seeds_stratified_by_group(
+    seeds: Sequence[SeedRecord | dict[str, Any]],
+    *,
+    rng_seed: int = 42,
+) -> StratifiedSeedPartition:
+    """Partition seeds into disjoint `compute_group_key` groups stratified by `ThreatCategory` (`T1–T7`)."""
+    holdout_bench_seeds: list[SeedRecord] = []
+    train_pool_seeds: list[SeedRecord] = []
+
+    for item in seeds:
+        rec = item if isinstance(item, SeedRecord) else SeedRecord.model_validate(item)
+        probe = f"{rec.seed_id} {rec.repo_or_source}"
+        if rec.split == "eval_holdout" or is_holdout_benchmark_source(probe):
+            holdout_bench_seeds.append(rec)
+        else:
+            train_pool_seeds.append(rec)
+
+    by_group: dict[str, list[SeedRecord]] = {}
+    group_cat_counts: dict[str, dict[ThreatCategory, int]] = {}
+    for rec in train_pool_seeds:
+        g = compute_group_key(rec.repo_or_source, rec.seed_id)
+        by_group.setdefault(g, []).append(rec)
+        cat: ThreatCategory = (
+            _map_benign_dev_category(rec.language_or_format, rec.tool_server, rec.tool_name)
+            if rec.category == "BENIGN_DEV"
+            else rec.category
+        )
+        cat_map = group_cat_counts.setdefault(g, {})
+        cat_map[cat] = cat_map.get(cat, 0) + 1
+
+    all_groups = sorted(by_group.keys())
+    if len(all_groups) < 3:
+        raise ValueError(
+            f"Need >= 3 distinct repo_or_source groups for zero-overlap splits, got {len(all_groups)}"
+        )
+
+    groups_by_cat: dict[ThreatCategory, list[str]] = {c: [] for c in ALL_THREAT_CATEGORIES}
+    for g in all_groups:
+        counts = group_cat_counts[g]
+        primary_cat = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
+        groups_by_cat[primary_cat].append(g)
+
+    rng = random.Random(rng_seed)
+    train_group_set: set[str] = set()
+    val_group_set: set[str] = set()
+    eval_dev_group_set: set[str] = set()
+    leftover_groups: list[str] = []
+
+    for cat in ALL_THREAT_CATEGORIES:
+        cat_groups = list(groups_by_cat[cat])
+        if not cat_groups:
+            continue
+        rng.shuffle(cat_groups)
+        if len(cat_groups) >= 3:
+            n_eval_cat = max(1, round(len(cat_groups) * 0.15))
+            n_val_cat = max(1, round(len(cat_groups) * 0.15))
+            if n_eval_cat + n_val_cat >= len(cat_groups):
+                n_eval_cat = 1
+                n_val_cat = 1
+            eval_dev_group_set.update(cat_groups[:n_eval_cat])
+            val_group_set.update(cat_groups[n_eval_cat : n_eval_cat + n_val_cat])
+            train_group_set.update(cat_groups[n_eval_cat + n_val_cat :])
+        else:
+            leftover_groups.extend(cat_groups)
+
+    for g in leftover_groups:
+        if not eval_dev_group_set:
+            eval_dev_group_set.add(g)
+        elif not val_group_set:
+            val_group_set.add(g)
+        else:
+            train_group_set.add(g)
+
+    if not train_group_set and len(val_group_set) > 1:
+        moved = sorted(val_group_set)[0]
+        val_group_set.remove(moved)
+        train_group_set.add(moved)
+
+    sorted_train_groups = tuple(sorted(train_group_set))
+    sorted_val_groups = tuple(sorted(val_group_set))
+    sorted_eval_groups = tuple(sorted(eval_dev_group_set))
+
+    return StratifiedSeedPartition(
+        train_seeds=[s for g in sorted_train_groups for s in by_group[g]],
+        val_seeds=[s for g in sorted_val_groups for s in by_group[g]],
+        eval_dev_seeds=[s for g in sorted_eval_groups for s in by_group[g]],
+        holdout_bench_seeds=holdout_bench_seeds,
+        train_groups=sorted_train_groups,
+        val_groups=sorted_val_groups,
+        eval_dev_groups=sorted_eval_groups,
+    )
+
+
 def adapt_benchmark_holdout_seeds(
     holdout_seeds: Sequence[SeedRecord | dict[str, Any]],
     *,
@@ -880,23 +1017,33 @@ def adapt_benchmark_holdout_seeds(
     if not holdout_seeds or target_count <= 0:
         return []
 
-    parsed_seeds: list[SeedRecord] = []
+    by_suite: dict[str, list[SeedRecord]] = {}
     for item in holdout_seeds:
         rec = item if isinstance(item, SeedRecord) else SeedRecord.model_validate(item)
-        parsed_seeds.append(rec)
+        suite_key = rec.repo_or_source.split("/")[0].strip().lower() or "holdout"
+        by_suite.setdefault(suite_key, []).append(rec)
 
-    rng = random.Random(rng_seed)
+    # Interleave benchmark suites (AgentDojo, MCPSecBench, ...) so every quota >= 2 covers all suites
+    interleaved_seeds: list[SeedRecord] = []
+    suite_keys = sorted(by_suite.keys())
+    max_len = max(len(v) for v in by_suite.values())
+    for pos in range(max_len):
+        for sk in suite_keys:
+            if pos < len(by_suite[sk]):
+                interleaved_seeds.append(by_suite[sk][pos])
+
+    mask_gate = _StratifiedBernoulliGate(1, 4, random.Random(rng_seed ^ 0xA251))
     out: list[JevTrainingPair] = []
 
     for idx in range(target_count):
-        rec = parsed_seeds[idx % len(parsed_seeds)]
+        rec = interleaved_seeds[idx % len(interleaved_seeds)]
         cat: ThreatCategory = (
             _map_benign_dev_category(rec.language_or_format, rec.tool_server, rec.tool_name)
             if rec.category == "BENIGN_DEV"
             else rec.category
         )
         pair_id = f"eval_bench_{idx:05d}_{rec.seed_id}"
-        is_benign_counterfactual = (idx >= len(parsed_seeds)) and (idx % 3 == 2)
+        is_benign_counterfactual = (idx % 3) == 2
 
         raw_args = json.loads(rec.tool_args_json)
         if not raw_args:
@@ -980,8 +1127,9 @@ def adapt_benchmark_holdout_seeds(
                 repo_or_source=rec.repo_or_source,
             )
 
-        if rng.random() < 0.20 and max(cand.y_enc, cand.y_sem, cand.y_hijack) >= 0.5:
-            cand = cand.model_copy(update={"intent": None, "intent_masked": True})
+        # Apply missing-intent masking symmetrically across BOTH attack & benign holdout candidates
+        if mask_gate.next():
+            cand = apply_missing_intent_mask(cand)
         out.append(scrub_pair_real_secrets(cand))
 
     return out
@@ -996,48 +1144,14 @@ def build_disjoint_dataset_splits(
     rng_seed: int = 42,
     offline_synth: bool = True,
     synth_model_id: str = "Qwen/Qwen2.5-14B-Instruct-AWQ",
+    completion_fn: CompletionBatchFn | None = None,
 ) -> dict[str, list[JevTrainingPair]]:
-    """Build strictly group-disjoint `train`, `val_calib`, and `eval_holdout` splits."""
-    holdout_bench_seeds: list[SeedRecord] = []
-    train_pool_seeds: list[SeedRecord] = []
+    """Build category-stratified, strictly group-disjoint `train`, `val_calib`, and `eval_holdout` splits."""
+    partition = partition_seeds_stratified_by_group(seeds, rng_seed=rng_seed)
 
-    for item in seeds:
-        rec = item if isinstance(item, SeedRecord) else SeedRecord.model_validate(item)
-        probe = f"{rec.seed_id} {rec.repo_or_source}"
-        if rec.split == "eval_holdout" or is_holdout_benchmark_source(probe):
-            holdout_bench_seeds.append(rec)
-        else:
-            train_pool_seeds.append(rec)
-
-    by_group: dict[str, list[SeedRecord]] = {}
-    for rec in train_pool_seeds:
-        g = compute_group_key(rec.repo_or_source, rec.seed_id)
-        by_group.setdefault(g, []).append(rec)
-
-    sorted_groups = sorted(by_group.keys())
-    if len(sorted_groups) < 3:
-        raise ValueError(
-            f"Need >= 3 distinct repo_or_source groups for zero-overlap splits, got {len(sorted_groups)}"
-        )
-
-    rng = random.Random(rng_seed)
-    shuffled_groups = list(sorted_groups)
-    rng.shuffle(shuffled_groups)
-
-    n_groups = len(shuffled_groups)
-    n_eval_dev_groups = max(1, round(n_groups * 0.15))
-    n_val_groups = max(1, round(n_groups * 0.15))
-    if n_eval_dev_groups + n_val_groups >= n_groups:
-        n_eval_dev_groups = 1
-        n_val_groups = 1
-
-    eval_dev_group_set = set(shuffled_groups[:n_eval_dev_groups])
-    val_group_set = set(shuffled_groups[n_eval_dev_groups : n_eval_dev_groups + n_val_groups])
-    train_group_set = set(shuffled_groups[n_eval_dev_groups + n_val_groups :])
-
-    train_seeds = [s for g in sorted(train_group_set) for s in by_group[g]]
-    val_seeds = [s for g in sorted(val_group_set) for s in by_group[g]]
-    eval_dev_seeds = [s for g in sorted(eval_dev_group_set) for s in by_group[g]]
+    shared_fn = completion_fn
+    if not offline_synth and shared_fn is None and (n_train + n_val_calib + n_eval_holdout) > 0:
+        shared_fn = get_or_create_vllm_completion_fn(model_id=synth_model_id)
 
     def _synthesize_mix(
         pool: list[SeedRecord],
@@ -1062,6 +1176,7 @@ def build_disjoint_dataset_splits(
                 rng_seed=sub_seed ^ 0x202,
                 offline=offline_synth,
                 model_id=synth_model_id,
+                completion_fn=shared_fn,
             )
         )
         combined: list[JevTrainingPair] = []
@@ -1069,24 +1184,23 @@ def build_disjoint_dataset_splits(
             combined.append(p.model_copy(update={"pair_id": f"{prefix}_{idx:06d}_{p.category.lower()}"}))
         return combined
 
-    train_pairs = _synthesize_mix(train_seeds, n_train, rng_seed ^ 0x1111, "train")
-    val_pairs = _synthesize_mix(val_seeds, n_val_calib, rng_seed ^ 0x2222, "val")
+    train_pairs = _synthesize_mix(partition.train_seeds, n_train, rng_seed ^ 0x1111, "train")
+    val_pairs = _synthesize_mix(partition.val_seeds, n_val_calib, rng_seed ^ 0x2222, "val")
 
-    bench_quota = min(
-        len(holdout_bench_seeds) if n_eval_holdout >= len(holdout_bench_seeds) else max(2, n_eval_holdout // 2),
-        n_eval_holdout,
-    )
-    if holdout_bench_seeds and n_eval_holdout >= 4:
-        bench_quota = max(len(holdout_bench_seeds), min(n_eval_holdout // 2, n_eval_holdout))
-        bench_quota = min(bench_quota, n_eval_holdout - 1)
+    if not partition.holdout_bench_seeds or n_eval_holdout <= 0:
+        bench_quota = 0
+    elif n_eval_holdout <= 4:
+        bench_quota = max(1, n_eval_holdout // 2)
+    else:
+        bench_quota = max(2, min(round(n_eval_holdout * 0.40), n_eval_holdout - 1))
 
     bench_eval_pairs = adapt_benchmark_holdout_seeds(
-        holdout_bench_seeds,
+        partition.holdout_bench_seeds,
         target_count=bench_quota,
         rng_seed=rng_seed ^ 0x3333,
     )
     dev_eval_pairs = _synthesize_mix(
-        eval_dev_seeds,
+        partition.eval_dev_seeds,
         n_eval_holdout - len(bench_eval_pairs),
         rng_seed ^ 0x4444,
         "eval_trifecta",
@@ -1104,7 +1218,7 @@ def _row_to_parquet_dict(pair: JevTrainingPair, packed: PackedJevRow, split_name
     is_trifecta_benign = bool(
         pair.private_spans
         and (pair.untrusted_spans or any(sp.dual_trust for sp in pair.private_spans))
-        and max(pair.y_enc, pair.y_sem, pair.y_hijack) < 0.5
+        and max(packed.y_enc, packed.y_sem, packed.y_hijack) < 0.5
     )
     return {
         "pair_id": pair.pair_id,
@@ -1178,8 +1292,12 @@ def pack_dataset_to_parquet(
     *,
     max_bucket: int = 4096,
     pad_to_max_bucket: bool = False,
+    batch_size: int = 10_000,
 ) -> dict[str, Path]:
-    """Pack `train`, `val_calib` (`diodebench_mcp_250k`) & `eval_holdout` (`trifecta_dev_bench_5k`) to Parquet."""
+    """Stream-pack `train`, `val_calib` (`diodebench_mcp_250k`) & `eval_holdout` (`trifecta_dev_bench_5k`) to Parquet."""
+    if batch_size < 1:
+        raise ValueError(f"batch_size must be >= 1, got {batch_size}")
+
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     packer = JevDatasetPacker(tokenizer, manifest)
@@ -1192,16 +1310,25 @@ def pack_dataset_to_parquet(
     written: dict[str, Path] = {}
 
     for split_name, pairs in splits.items():
-        rows_out: list[dict[str, Any]] = []
-        for pair in pairs:
-            packed = packer.pack_pair(
-                pair, max_bucket=max_bucket, pad_to_max_bucket=pad_to_max_bucket
-            )
-            rows_out.append(_row_to_parquet_dict(pair, packed, split_name))
-
         target_file = out_dir / file_names.get(split_name, f"{split_name}.parquet")
-        table = pa.Table.from_pylist(rows_out, schema=PACKED_PARQUET_SCHEMA)
-        pq.write_table(table, str(target_file))
+        batch_rows: list[dict[str, Any]] = []
+        wrote_any_batch = False
+
+        with pq.ParquetWriter(str(target_file), PACKED_PARQUET_SCHEMA) as writer:
+            for pair in pairs:
+                packed = packer.pack_pair(
+                    pair, max_bucket=max_bucket, pad_to_max_bucket=pad_to_max_bucket
+                )
+                batch_rows.append(_row_to_parquet_dict(pair, packed, split_name))
+                if len(batch_rows) >= batch_size:
+                    writer.write_table(pa.Table.from_pylist(batch_rows, schema=PACKED_PARQUET_SCHEMA))
+                    batch_rows.clear()
+                    wrote_any_batch = True
+
+            if batch_rows or not wrote_any_batch:
+                writer.write_table(pa.Table.from_pylist(batch_rows, schema=PACKED_PARQUET_SCHEMA))
+                batch_rows.clear()
+
         written[split_name] = target_file
 
     return written
@@ -1307,6 +1434,27 @@ def audit_packed_splits(
                     violations.append(f"Invalid target_src_idx={t_src} on {r['pair_id']}")
                 if not (0 <= t_arg <= 16) or not r["arg_valid_mask"][t_arg]:
                     violations.append(f"Invalid target_arg_idx={t_arg} on {r['pair_id']}")
+
+                row_y_enc = float(r["y_enc"])
+                row_y_sem = float(r["y_sem"])
+                row_y_hijack = float(r["y_hijack"])
+                if max(row_y_enc, row_y_sem) >= 0.5 and t_src >= 32:
+                    violations.append(
+                        f"Contradictory leak supervision (y_enc={row_y_enc}, y_sem={row_y_sem}) with target_src_idx={t_src} on {r['pair_id']}"
+                    )
+                if max(row_y_enc, row_y_sem) < 0.5 and t_src != 32:
+                    violations.append(
+                        f"Non-leak row must point target_src_idx=32, got {t_src} on {r['pair_id']}"
+                    )
+                if max(row_y_enc, row_y_sem, row_y_hijack) >= 0.5 and t_arg >= 16:
+                    violations.append(
+                        f"Contradictory attack supervision with target_arg_idx={t_arg} on {r['pair_id']}"
+                    )
+                if max(row_y_enc, row_y_sem, row_y_hijack) < 0.5 and t_arg != 16:
+                    violations.append(
+                        f"Benign row must point target_arg_idx=16, got {t_arg} on {r['pair_id']}"
+                    )
+
                 for qp in r["query_positions"]:
                     if r["token_roles"][qp] != ROLE_QUERY or r["seg_ids"][qp] != 5:
                         violations.append(f"Query role/seg invariant broken on {r['pair_id']}")

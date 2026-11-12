@@ -151,6 +151,13 @@ _NON_ENGLISH_STOPWORDS: frozenset[str] = frozenset(
 
 _REAL_SECRET_SCRUB_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bsk_live_[A-Za-z0-9_]{6,}\b"), "sk_test_synth"),
+    (re.compile(r"\bsk-(?:proj-|svcacct-|live-)?[A-Za-z0-9_-]{20,}\b"), "sk_openai_synth"),
+    (re.compile(r"\bhf_[A-Za-z0-9]{24,}\b"), "hf_synth_tok"),
+    (re.compile(r"\bwhsec_[A-Za-z0-9_]{12,}\b"), "whsec_synth"),
+    (
+        re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"),
+        "jwt_synth_tok",
+    ),
     (re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{12,}\b"), "gh_synth_tok"),
     (re.compile(r"\bgithub_pat_[A-Za-z0-9_]{12,}\b"), "github_pat_synth"),
     (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "SYNTH_AWS_KEY"),
