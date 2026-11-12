@@ -8,6 +8,7 @@ from __future__ import annotations
 import ast
 import hashlib
 from pathlib import Path
+from typing import Any
 import warnings
 
 import numpy as np
@@ -551,8 +552,16 @@ def test_onnx_opset17_export_contract_ort_parity_and_determinism(tmp_path, model
     for scope in HEAD_SCOPE_NAMES:
         assert f"/{scope}" in node_names, f"head scope {scope!r} missing from ONNX node names"
 
-    # Parity at the export example AND at a different batch + sequence length (dynamic axes).
-    for batch in (ex, make_batch(batch=3, length=192, seed=82), make_batch(batch=1, length=96, seed=83)):
+    # Parity at the export example AND at a different batch + sequence length (dynamic axes),
+    # explicitly exercising STATE, QUERY, pchunk_positions, and arg_positions at indices >= 128.
+    batch_192 = make_batch(batch=3, length=192, seed=85, n_state_min=150, n_state_max=180)
+    assert bool((batch_192["query_positions"] >= 128).all())
+    active_p192 = batch_192["pchunk_positions"][:, :32][batch_192["pchunk_valid_mask"][:, :32]]
+    active_a192 = batch_192["arg_positions"][:, :16][batch_192["arg_valid_mask"][:, :16]]
+    assert active_p192.numel() > 0 and bool((active_p192 >= 128).any())
+    assert active_a192.numel() > 0 and bool((active_a192 >= 128).any())
+
+    for batch in (ex, batch_192, make_batch(batch=1, length=96, seed=83)):
         with torch.no_grad():
             ref = call(model, batch)
         got = _ort_run(p1, batch)
@@ -746,3 +755,507 @@ def test_fitted_temperatures_plug_into_model_buffer(model):
     T = fit_temperature_scaling(logits, y)
     model.set_logit_temperatures(T)
     torch.testing.assert_close(model.logit_temperatures, T)
+
+
+# --------------------------------------------------------------------------------------
+# Fix Round 1: causal span pooling, sample_weights validation, pin_onnx_output_shapes,
+# extreme-logit report safety, and MaskedLM/CausalLM offline checkpoint loading
+# --------------------------------------------------------------------------------------
+def _make_golden_packer() -> tuple[Any, dict[str, int], int]:
+    from tokenizers import Tokenizer
+
+    from diodemodel.contract import BundleManifest, REQUIRED_SPECIAL_TOKENS
+    from diodemodel.dataset_packer import JevDatasetPacker
+
+    tok_path = Path(__file__).parent / "fixtures" / "golden_tokenizer.json"
+    tok = Tokenizer.from_file(str(tok_path))
+    sp = {t: int(tok.token_to_id(t)) for t in REQUIRED_SPECIAL_TOKENS}
+    zero_sha = "0" * 64
+    manifest = BundleManifest(
+        model_id="test-nanojev-packer",
+        sha256_model_onnx=zero_sha,
+        sha256_tokenizer_json=zero_sha,
+        sha256_calibration_json=zero_sha,
+        special_token_ids=sp,
+        ece_val=0.01,
+    )
+    return JevDatasetPacker(tok, manifest), sp, int(tok.get_vocab_size())
+
+
+def _packed_row_to_torch(row) -> dict[str, torch.Tensor]:
+    feed = row.as_ort_feed()
+    return {k: torch.from_numpy(v) for k, v in feed.items()}
+
+
+def test_nanojev_causal_span_pooling_on_packer_multi_chunk_and_multi_arg_pytorch_and_ort(tmp_path):
+    from diodemodel.mutators import SpanItem
+
+    packer, sp, vocab_sz = _make_golden_packer()
+    torch.manual_seed(9876)
+    cfg = Qwen3Config(
+        vocab_size=max(128, vocab_sz + 8),
+        hidden_size=32,
+        intermediate_size=64,
+        num_hidden_layers=2,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        head_dim=8,
+        max_position_embeddings=2048,
+        pad_token_id=sp["[PAD]"],
+        bos_token_id=sp["[CLS]"],
+        eos_token_id=sp["[SEP]"],
+    )
+    nano = NanoJevCausalModel.from_config(cfg).eval()
+
+    def _pack(
+        chunks: tuple[str, str, str],
+        args_map: dict[str, str],
+        *,
+        max_bucket: int = 512,
+        pad_to_max_bucket: bool = True,
+    ):
+        priv_spans = [
+            SpanItem(span_id="p0", source_label="env", text=chunks[0], is_high_secret=True),
+            SpanItem(span_id="p1", source_label="memo", text=chunks[1], dual_trust=True),
+            SpanItem(span_id="p2", source_label="db", text=chunks[2], is_high_secret=False),
+        ]
+        untrust_spans = [
+            SpanItem(span_id="u0", source_label="web", text="external untrusted README snippet"),
+        ]
+        return packer.pack_raw(
+            intent="Summarize quarterly planning thread locally",
+            private_spans=priv_spans,
+            untrusted_spans=untrust_spans,
+            call_server="github",
+            call_tool="create_issue",
+            call_arguments=args_map,
+            y_enc=1.0,
+            y_sem=0.0,
+            y_hijack=1.0,
+            attributed_pchunk_idx=1,
+            attributed_arg_key="title",
+            max_bucket=max_bucket,
+            pad_to_max_bucket=pad_to_max_bucket,
+        )
+
+    base_chunks = (
+        "stripe secret key alpha",
+        "ProjectHelios LOI signed cash",
+        "billing calc price tier enterprise",
+    )
+    base_args = {
+        "body": "alpha secret key",
+        "title": "billing tier price",
+        "url": "github / repo / prod",
+    }
+    base_row = _pack(base_chunks, base_args, max_bucket=512, pad_to_max_bucket=True)
+    assert sum(base_row.pchunk_valid_mask[:32]) == 3
+    assert sum(base_row.arg_valid_mask[:16]) == 3
+    base_batch = _packed_row_to_torch(base_row)
+
+    onnx_path = tmp_path / "nano_span_pool.onnx"
+    _export(nano, base_batch, onnx_path)
+    validate_onnx_contract(onnx_path)
+
+    with torch.no_grad():
+        base_h = nano.encode(base_batch["input_ids"], base_batch["seg_ids"], base_batch["token_roles"])
+        base_src_slots, base_arg_slots = nano.extract_pointer_slot_states(
+            base_h,
+            base_batch["seg_ids"],
+            base_batch["token_roles"],
+            base_batch["pchunk_positions"],
+            base_batch["pchunk_valid_mask"],
+            base_batch["arg_positions"],
+            base_batch["arg_valid_mask"],
+        )
+        base_src_keys = nano.src_pointer.k_proj(base_src_slots)
+        base_arg_keys = nano.arg_pointer.k_proj(base_arg_slots)
+        _, base_src_l, base_arg_l = call(nano, base_batch, logits=True)
+        base_pt_probs = call(nano, base_batch)
+    base_ort_probs = _ort_run(onnx_path, base_batch)
+    for r, g in zip(base_pt_probs, base_ort_probs):
+        assert np.abs(r.numpy() - g).max() < 1e-4
+
+    # 1. Private chunk content sensitivity & causal invariance across all 3 chunks (PyTorch + ORT).
+    alt_chunk_texts = (
+        "beta gamma delta custom discount",
+        "open issue login timeout filler",
+        "SELECT COUNT DROP TABLE query",
+    )
+    chunk_logit_gaps: list[float] = []
+    chunk_ort_prob_gaps: list[float] = []
+    for i in range(3):
+        mod_chunks = list(base_chunks)
+        mod_chunks[i] = alt_chunk_texts[i]
+        pert_row = _pack(tuple(mod_chunks), base_args, max_bucket=512, pad_to_max_bucket=True)  # type: ignore[arg-type]
+        pert_batch = _packed_row_to_torch(pert_row)
+        assert not torch.equal(pert_batch["input_ids"], base_batch["input_ids"])
+        with torch.no_grad():
+            h_i = nano.encode(pert_batch["input_ids"], pert_batch["seg_ids"], pert_batch["token_roles"])
+            src_slots_i, _ = nano.extract_pointer_slot_states(
+                h_i,
+                pert_batch["seg_ids"],
+                pert_batch["token_roles"],
+                pert_batch["pchunk_positions"],
+                pert_batch["pchunk_valid_mask"],
+                pert_batch["arg_positions"],
+                pert_batch["arg_valid_mask"],
+            )
+            src_keys_i = nano.src_pointer.k_proj(src_slots_i)
+            _, src_l_i, _ = call(nano, pert_batch, logits=True)
+            pt_probs_i = call(nano, pert_batch)
+        ort_probs_i = _ort_run(onnx_path, pert_batch)
+        for r, g in zip(pt_probs_i, ort_probs_i):
+            assert np.abs(r.numpy() - g).max() < 1e-4
+
+        if i > 0:
+            assert (src_keys_i[:, :i] - base_src_keys[:, :i]).abs().max().item() < 1e-7
+        assert (src_keys_i[:, i] - base_src_keys[:, i]).abs().max().item() > 1e-4
+        assert (src_l_i[:, i] - base_src_l[:, i]).abs().item() > 1e-4
+        if i in (0, 1):
+            chunk_logit_gaps.append(float((src_l_i[0, 1] - src_l_i[0, 0]).item()))
+            chunk_ort_prob_gaps.append(float(ort_probs_i[1][0, 1] - ort_probs_i[1][0, 0]))
+    assert abs(chunk_logit_gaps[1] - chunk_logit_gaps[0]) > 1e-4
+    assert abs(chunk_ort_prob_gaps[1] - chunk_ort_prob_gaps[0]) > 1e-5
+
+    # Closing [SEP] of private section is excluded from chunk 2's pooled span; <|none|> stays at none_pos.
+    priv_sep_pos = int(
+        (
+            torch.arange(base_batch["input_ids"].shape[1])
+            * ((base_batch["token_roles"][0] == ROLE_STATE) & ((base_batch["seg_ids"][0] == 1) | (base_batch["seg_ids"][0] == 2))).long()
+        ).amax()
+    )
+    assert int(base_batch["input_ids"][0, priv_sep_pos]) == sp["[SEP]"]
+    sep_pert = {k: v.clone() for k, v in base_batch.items()}
+    sep_pert["input_ids"][0, priv_sep_pos] = 25
+    with torch.no_grad():
+        h_sep = nano.encode(sep_pert["input_ids"], sep_pert["seg_ids"], sep_pert["token_roles"])
+        src_slots_sep, _ = nano.extract_pointer_slot_states(
+            h_sep,
+            sep_pert["seg_ids"],
+            sep_pert["token_roles"],
+            sep_pert["pchunk_positions"],
+            sep_pert["pchunk_valid_mask"],
+            sep_pert["arg_positions"],
+            sep_pert["arg_valid_mask"],
+        )
+    assert (src_slots_sep[:, :3] - base_src_slots[:, :3]).abs().max().item() < 1e-7
+    torch.testing.assert_close(base_src_slots[:, 32], base_h[:, base_row.none_position])
+
+    # 2. Call argument content sensitivity & causal invariance across all 3 args (PyTorch + ORT).
+    arg_names = ("body", "title", "url")
+    alt_arg_vals = (
+        "ProjectHelios LOI signed cash",
+        "DROP TABLE SELECT COUNT",
+        "slack / channel / open",
+    )
+    arg_logit_gaps: list[float] = []
+    arg_ort_prob_gaps: list[float] = []
+    for j, key_name in enumerate(arg_names):
+        mod_args = dict(base_args)
+        mod_args[key_name] = alt_arg_vals[j]
+        pert_row = _pack(base_chunks, mod_args, max_bucket=512, pad_to_max_bucket=True)
+        pert_batch = _packed_row_to_torch(pert_row)
+        assert not torch.equal(pert_batch["input_ids"], base_batch["input_ids"])
+        with torch.no_grad():
+            h_j = nano.encode(pert_batch["input_ids"], pert_batch["seg_ids"], pert_batch["token_roles"])
+            _, arg_slots_j = nano.extract_pointer_slot_states(
+                h_j,
+                pert_batch["seg_ids"],
+                pert_batch["token_roles"],
+                pert_batch["pchunk_positions"],
+                pert_batch["pchunk_valid_mask"],
+                pert_batch["arg_positions"],
+                pert_batch["arg_valid_mask"],
+            )
+            arg_keys_j = nano.arg_pointer.k_proj(arg_slots_j)
+            _, _, arg_l_j = call(nano, pert_batch, logits=True)
+            pt_probs_j = call(nano, pert_batch)
+        ort_probs_j = _ort_run(onnx_path, pert_batch)
+        for r, g in zip(pt_probs_j, ort_probs_j):
+            assert np.abs(r.numpy() - g).max() < 1e-4
+
+        if j > 0:
+            assert (arg_keys_j[:, :j] - base_arg_keys[:, :j]).abs().max().item() < 1e-7
+        assert (arg_keys_j[:, j] - base_arg_keys[:, j]).abs().max().item() > 1e-4
+        assert (arg_l_j[:, j] - base_arg_l[:, j]).abs().item() > 1e-4
+        if j in (0, 1):
+            arg_logit_gaps.append(float((arg_l_j[0, 1] - arg_l_j[0, 0]).item()))
+            arg_ort_prob_gaps.append(float(ort_probs_j[2][0, 1] - ort_probs_j[2][0, 0]))
+    assert abs(arg_logit_gaps[1] - arg_logit_gaps[0]) > 1e-4
+    assert abs(arg_ort_prob_gaps[1] - arg_ort_prob_gaps[0]) > 1e-5
+
+    # Closing [SEP] before <|none|> is excluded from arg 2's pooled span; <|none|> stays at none_pos.
+    call_sep_pos = base_row.none_position - 1
+    assert int(base_batch["input_ids"][0, call_sep_pos]) == sp["[SEP]"]
+    csep_pert = {k: v.clone() for k, v in base_batch.items()}
+    csep_pert["input_ids"][0, call_sep_pos] = 26
+    with torch.no_grad():
+        h_csep = nano.encode(csep_pert["input_ids"], csep_pert["seg_ids"], csep_pert["token_roles"])
+        _, arg_slots_csep = nano.extract_pointer_slot_states(
+            h_csep,
+            csep_pert["seg_ids"],
+            csep_pert["token_roles"],
+            csep_pert["pchunk_positions"],
+            csep_pert["pchunk_valid_mask"],
+            csep_pert["arg_positions"],
+            csep_pert["arg_valid_mask"],
+        )
+    assert (arg_slots_csep[:, :3] - base_arg_slots[:, :3]).abs().max().item() < 1e-7
+    torch.testing.assert_close(base_arg_slots[:, 16], base_h[:, base_row.none_position])
+
+    # 3a. Query isolation (< 1e-7) on the real packer sequence in BOTH PyTorch and ORT.
+    with torch.no_grad():
+        base_logits_pack = call(nano, base_batch, logits=True)
+    for q_idx in range(5):
+        q_pos = int(base_batch["query_positions"][0, q_idx])
+        q_pert = _perturb_token(base_batch, 0, q_pos, 30 + q_idx)
+        with torch.no_grad():
+            q_logits = call(nano, q_pert, logits=True)
+        q_ort = _ort_run(onnx_path, q_pert)
+        for k in range(3):
+            if k != q_idx:
+                assert (q_logits[0][0, k] - base_logits_pack[0][0, k]).abs().item() < 1e-7
+                assert abs(float(q_ort[0][0, k] - base_ort_probs[0][0, k])) < 1e-7
+        if q_idx != 3:
+            assert (q_logits[1][0] - base_logits_pack[1][0]).abs().max().item() < 1e-7
+            assert np.abs(q_ort[1][0] - base_ort_probs[1][0]).max() < 1e-7
+        if q_idx != 4:
+            assert (q_logits[2][0] - base_logits_pack[2][0]).abs().max().item() < 1e-7
+            assert np.abs(q_ort[2][0] - base_ort_probs[2][0]).max() < 1e-7
+
+    # 3b. Bucket padding invariance (512 vs 1024, < 1e-6) in BOTH PyTorch and ORT.
+    row_1024 = _pack(base_chunks, base_args, max_bucket=1024, pad_to_max_bucket=True)
+    assert base_row.bucket_length == 512 and row_1024.bucket_length == 1024
+    batch_1024 = _packed_row_to_torch(row_1024)
+    with torch.no_grad():
+        logits_512 = call(nano, base_batch, logits=True)
+        logits_1024 = call(nano, batch_1024, logits=True)
+        probs_512 = call(nano, base_batch)
+        probs_1024 = call(nano, batch_1024)
+    for x, y in list(zip(logits_512, logits_1024)) + list(zip(probs_512, probs_1024)):
+        assert (x - y).abs().max().item() < 1e-6
+    ort_1024 = _ort_run(onnx_path, batch_1024)
+    for x, y in zip(base_ort_probs, ort_1024):
+        assert np.abs(x - y).max() < 1e-6
+
+
+def test_sample_weights_and_pointer_sample_weights_validation_and_device_normalisation():
+    from unittest.mock import patch
+
+    nl, sl, al, y, sv, av, st, at = _loss_batch(n=8, seed=12)
+
+    # masked_pointer_cross_entropy must reject 2D shapes (which would broadcast to [N, N]),
+    # wrong lengths, negative values, NaN, and Inf.
+    for bad_sw in (
+        torch.ones(8, 1),
+        torch.ones(8, 3),
+        torch.ones(9),
+        torch.tensor([-0.1] + [1.0] * 7),
+        torch.tensor([float("nan")] + [1.0] * 7),
+        torch.tensor([float("inf")] + [1.0] * 7),
+    ):
+        with pytest.raises(ValueError):
+            masked_pointer_cross_entropy(sl, st, sv, sample_weights=bad_sw)
+
+    # Valid 1D sample_weights on masked_pointer_cross_entropy matches manual row-weighted CE.
+    w1d = torch.tensor([2.0, 0.5, 1.0, 3.0, 0.0, 1.5, 2.5, 1.0])
+    got_ce = masked_pointer_cross_entropy(sl, st, sv, sample_weights=w1d)
+    per_row = torch.nn.functional.cross_entropy(sl.masked_fill(~sv, float("-inf")), st, reduction="none")
+    ref_ce = (per_row * w1d).sum() / w1d.sum()
+    torch.testing.assert_close(got_ce, ref_ce)
+
+    # compute_jev_loss must reject invalid sample_weights AND invalid pointer_sample_weights.
+    for bad_sw in (
+        torch.ones(8, 1),
+        torch.ones(8, 2),
+        torch.tensor([[float("nan"), 1.0, 1.0]] + [[1.0, 1.0, 1.0]] * 7),
+        torch.tensor([[float("inf"), 1.0, 1.0]] + [[1.0, 1.0, 1.0]] * 7),
+    ):
+        with pytest.raises(ValueError):
+            compute_jev_loss(nl, sl, al, y, st, at, sv, av, sample_weights=bad_sw)
+
+    for bad_psw in (
+        torch.ones(8, 1),
+        torch.ones(8, 3),
+        torch.ones(7),
+        torch.tensor([-1.0] + [1.0] * 7),
+        torch.tensor([float("nan")] + [1.0] * 7),
+        torch.tensor([float("-inf")] + [1.0] * 7),
+    ):
+        with pytest.raises(ValueError):
+            compute_jev_loss(nl, sl, al, y, st, at, sv, av, pointer_sample_weights=bad_psw)
+
+    # Verify explicit device=... normalisation on sample_weights and pointer_sample_weights.
+    orig_to = torch.Tensor.to
+    seen_devices: list[torch.device] = []
+
+    def _spy_to(self, *args, **kwargs):
+        if "device" in kwargs and kwargs["device"] is not None:
+            seen_devices.append(torch.device(kwargs["device"]))
+        elif args and isinstance(args[0], torch.device):
+            seen_devices.append(args[0])
+        return orig_to(self, *args, **kwargs)
+
+    with patch.object(torch.Tensor, "to", _spy_to):
+        seen_devices.clear()
+        masked_pointer_cross_entropy(sl, st, sv, sample_weights=torch.ones(8))
+        assert sl.device in seen_devices
+
+        seen_devices.clear()
+        compute_jev_loss(
+            nl,
+            sl,
+            al,
+            y,
+            st,
+            at,
+            sv,
+            av,
+            sample_weights=torch.ones(8, 3),
+            pointer_sample_weights=torch.ones(8),
+        )
+        assert len(seen_devices) >= 2
+
+
+def test_pin_onnx_output_shapes_rejects_malformed_rank_or_static_width():
+    from onnx import TensorProto, helper
+
+    def _build_dummy_onnx(actual_widths: tuple[int, int, int], declared_shapes: tuple[list[Any], ...]):
+        in_x = helper.make_tensor_value_info("x", TensorProto.FLOAT, ["batch", max(actual_widths)])
+        nodes = []
+        outputs = []
+        for idx, (name, act_w, decl_shape) in enumerate(
+            zip(("noul_probs", "src_choice_probs", "arg_choice_probs"), actual_widths, declared_shapes, strict=True)
+        ):
+            starts = helper.make_tensor(f"s_{idx}", TensorProto.INT64, [1], [0])
+            ends = helper.make_tensor(f"e_{idx}", TensorProto.INT64, [1], [act_w])
+            axes = helper.make_tensor(f"a_{idx}", TensorProto.INT64, [1], [1])
+            nodes.append(helper.make_node("Constant", [], [f"sc_{idx}"], value=starts))
+            nodes.append(helper.make_node("Constant", [], [f"ec_{idx}"], value=ends))
+            nodes.append(helper.make_node("Constant", [], [f"ac_{idx}"], value=axes))
+            nodes.append(helper.make_node("Slice", ["x", f"sc_{idx}", f"ec_{idx}", f"ac_{idx}"], [name]))
+            outputs.append(helper.make_tensor_value_info(name, TensorProto.FLOAT, decl_shape))
+        graph = helper.make_graph(nodes, "test_pin", [in_x], outputs)
+        return helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)])
+
+    # Valid symbolic widths whose inferred shapes are 3 / 33 / 17 succeed.
+    ok_model = _build_dummy_onnx(
+        (3, 33, 17),
+        (["batch", "noul_d1"], ["batch", "src_d1"], ["batch", "arg_d1"]),
+    )
+    pinned = pin_onnx_output_shapes(ok_model)
+    assert pinned is ok_model
+    assert [pinned.graph.output[i].type.tensor_type.shape.dim[1].dim_value for i in range(3)] == [3, 33, 17]
+
+    # Concrete wrong width on output proto raises ValueError.
+    bad_concrete = _build_dummy_onnx((3, 32, 17), (["batch", 3], ["batch", 32], ["batch", 17]))
+    with pytest.raises(ValueError, match="src_choice_probs|33|32|width|dim"):
+        pin_onnx_output_shapes(bad_concrete)
+
+    # Symbolic dim_param hiding an inferred wrong width (32 != 33) raises ValueError via shape_inference.
+    bad_symbolic = _build_dummy_onnx(
+        (3, 32, 17),
+        (["batch", "d0"], ["batch", "d1"], ["batch", "d2"]),
+    )
+    with pytest.raises(ValueError, match="src_choice_probs|33|32|width|dim"):
+        pin_onnx_output_shapes(bad_symbolic)
+
+    # Wrong rank (rank 3 or rank 1) raises ValueError.
+    bad_rank = _build_dummy_onnx((3, 33, 17), (["batch", 3, 1], ["batch", 33], ["batch", 17]))
+    with pytest.raises(ValueError, match="rank|noul_probs"):
+        pin_onnx_output_shapes(bad_rank)
+
+
+def test_temperature_calibration_report_extreme_logits_no_overflow_warning():
+    logits = torch.tensor(
+        [
+            [-1000.0, -90.0, 1000.0],
+            [-800.0, 95.0, -1200.0],
+            [900.0, -110.0, 800.0],
+            [0.0, -75.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+    targets = torch.tensor(
+        [
+            [0.0, 0.0, 1.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=torch.float32,
+    )
+    temps = torch.tensor([0.1, 0.1, 0.1], dtype=torch.float32)  # z / T reaches -10000 and -900 (< -710)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        rep = temperature_calibration_report(logits, targets, temps)
+    assert 0.0 <= rep["ece_val"] <= 1.0
+    assert all(np.isfinite(rep["ece_before"])) and all(np.isfinite(rep["ece_after"]))
+    assert all(np.isfinite(rep["nll_before"])) and all(np.isfinite(rep["nll_after"]))
+
+
+def test_from_pretrained_loads_masked_lm_and_causal_lm_checkpoints_bit_for_bit(tmp_path):
+    from transformers import ModernBertForMaskedLM, Qwen3ForCausalLM
+
+    assert ModernBertForMaskedLM.base_model_prefix == "model"
+    assert Qwen3ForCausalLM.base_model_prefix == "model"
+
+    torch.manual_seed(2026)
+    mb_cfg = ModernBertConfig(
+        vocab_size=VOCAB,
+        hidden_size=32,
+        intermediate_size=64,
+        num_hidden_layers=2,
+        num_attention_heads=4,
+        local_attention=8,
+        max_position_embeddings=512,
+        pad_token_id=PAD_ID,
+        bos_token_id=1,
+        eos_token_id=2,
+        cls_token_id=1,
+        sep_token_id=2,
+    )
+    mb_mlm = ModernBertForMaskedLM(mb_cfg).eval()
+    mb_dir = tmp_path / "modernbert_mlm"
+    mb_mlm.save_pretrained(str(mb_dir))
+
+    mb_jev = ModernBERTJevModel.from_pretrained(str(mb_dir)).eval()
+    mb_ref_sd = mb_mlm.model.state_dict()
+    mb_got_sd = mb_jev.backbone.state_dict()
+    assert set(mb_ref_sd.keys()) == set(mb_got_sd.keys())
+    for k, ref_t in mb_ref_sd.items():
+        assert torch.equal(ref_t, mb_got_sd[k]), f"ModernBERT backbone weight mismatch on {k}"
+
+    # Growing embeddings for the 17 Jev special tokens preserves pretrained rows 0..VOCAB-1 bit-for-bit.
+    mb_jev_grown = ModernBERTJevModel.from_pretrained(str(mb_dir), vocab_size=VOCAB + 17).eval()
+    assert mb_jev_grown.backbone.get_input_embeddings().num_embeddings == VOCAB + 17
+    assert torch.equal(
+        mb_jev_grown.backbone.get_input_embeddings().weight[:VOCAB],
+        mb_mlm.model.get_input_embeddings().weight,
+    )
+
+    qw_cfg = Qwen3Config(
+        vocab_size=VOCAB,
+        hidden_size=32,
+        intermediate_size=64,
+        num_hidden_layers=2,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        head_dim=8,
+        max_position_embeddings=512,
+        pad_token_id=PAD_ID,
+        bos_token_id=1,
+        eos_token_id=2,
+    )
+    qw_clm = Qwen3ForCausalLM(qw_cfg).eval()
+    qw_dir = tmp_path / "qwen3_clm"
+    qw_clm.save_pretrained(str(qw_dir))
+
+    qw_jev = NanoJevCausalModel.from_pretrained(str(qw_dir)).eval()
+    qw_ref_sd = qw_clm.model.state_dict()
+    qw_got_sd = qw_jev.backbone.state_dict()
+    assert set(qw_ref_sd.keys()) == set(qw_got_sd.keys())
+    for k, ref_t in qw_ref_sd.items():
+        assert torch.equal(ref_t, qw_got_sd[k]), f"Qwen3 backbone weight mismatch on {k}"
+

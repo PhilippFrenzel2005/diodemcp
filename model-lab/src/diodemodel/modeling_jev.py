@@ -26,6 +26,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Final
 
+import onnx
 import torch
 from torch import nn
 from transformers import ModernBertModel, Qwen3Model
@@ -104,20 +105,63 @@ def build_token_roles_attn_mask(
 
 
 class PointerHead(nn.Module):
-    """Scaled dot-product pointer over gathered slot hidden states, masked *before* the softmax."""
+    """Scaled dot-product pointer over gathered (or causally span-pooled) slot hidden states, masked
+    *before* the softmax."""
 
-    def __init__(self, hidden_size: int, pointer_dim: int) -> None:
+    def __init__(
+        self,
+        hidden_size: int,
+        pointer_dim: int,
+        *,
+        causal_num_candidates: int | None = None,
+        causal_is_arg: bool = False,
+    ) -> None:
         super().__init__()
         self.q_proj = nn.Linear(hidden_size, pointer_dim)
         self.k_proj = nn.Linear(hidden_size, pointer_dim)
         self.scale = float(pointer_dim) ** -0.5
+        self.causal_num_candidates = causal_num_candidates
+        self.causal_is_arg = causal_is_arg
         for lin in (self.q_proj, self.k_proj):
             nn.init.normal_(lin.weight, std=0.02)
             nn.init.zeros_(lin.bias)
 
-    def forward(
-        self, query_hidden: torch.Tensor, slot_hidden: torch.Tensor, valid_mask: torch.Tensor
+    def pool_slots(
+        self,
+        hidden: torch.Tensor,
+        seg_ids: torch.Tensor,
+        token_roles: torch.Tensor,
+        slot_positions: torch.Tensor,
+        valid_mask: torch.Tensor,
     ) -> torch.Tensor:
+        if self.causal_num_candidates is None:
+            return _gather_positions(hidden, slot_positions)
+        return pool_causal_slot_hidden(
+            hidden,
+            seg_ids,
+            token_roles,
+            slot_positions,
+            valid_mask,
+            num_candidates=self.causal_num_candidates,
+            is_arg=self.causal_is_arg,
+        )
+
+    def forward(
+        self,
+        query_hidden: torch.Tensor,
+        slot_hidden: torch.Tensor,
+        valid_mask: torch.Tensor,
+        *,
+        seg_ids: torch.Tensor | None = None,
+        token_roles: torch.Tensor | None = None,
+        slot_positions: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        if slot_positions is not None:
+            if seg_ids is None or token_roles is None:
+                raise ValueError("seg_ids and token_roles are required when slot_positions is passed")
+            slot_hidden = self.pool_slots(
+                slot_hidden, seg_ids, token_roles, slot_positions, valid_mask
+            )
         q = self.q_proj(query_hidden)  # [B, d]
         k = self.k_proj(slot_hidden)  # [B, N, d]
         scores = torch.matmul(k, q.unsqueeze(-1)).squeeze(-1) * self.scale  # [B, N]
@@ -144,19 +188,58 @@ class NoulHead(nn.Module):
         return (h * self.out_weight).sum(dim=-1) + self.out_bias
 
 
+def _check_output_dims_proto(out: Any, expected_width: int, source: str) -> bool:
+    """Validate rank (if present) and static width (if concrete); return True iff width is proven."""
+    if not out.type.HasField("tensor_type") or not out.type.tensor_type.HasField("shape"):
+        return False
+    dims = out.type.tensor_type.shape.dim
+    if len(dims) == 0:
+        return False
+    if len(dims) != 2:
+        raise ValueError(
+            f"ONNX output {out.name!r} ({source}) expected rank 2, got rank {len(dims)}"
+        )
+    d1 = dims[1]
+    if d1.HasField("dim_value") and d1.dim_value != 0:
+        if d1.dim_value != expected_width:
+            raise ValueError(
+                f"ONNX output {out.name!r} ({source}) expected static width {expected_width}, "
+                f"got {d1.dim_value}"
+            )
+        return True
+    return False
+
+
 def pin_onnx_output_shapes(model: Any) -> Any:
     """Pin the contract's static output dims on a traced ONNX ``ModelProto`` (in place; also returned).
 
     ``torch.onnx.export`` (tracer, ``dynamo=False``) reports the static slot dimension of the three
     outputs as a symbolic ``*_dim_1`` even though ONNX shape inference proves it is 3 / 33 / 17, which
-    makes ``contract.validate_onnx_contract`` reject the graph. Call this on the loaded export (A6 does
-    so before quantisation / saving) to restore ``[batch, 3]``, ``[batch, 33]``, ``[batch, 17]``.
+    makes ``contract.validate_onnx_contract`` reject the graph. Before stamping ``["batch", width]``,
+    both declared and ``onnx.shape_inference.infer_shapes`` dims are checked so a rank != 2 or concrete
+    width mismatch raises ``ValueError`` instead of being masked.
     """
     static = {
         "noul_probs": NUM_NOUL_HEADS,
         "src_choice_probs": SRC_SLOTS,
         "arg_choice_probs": ARG_SLOTS,
     }
+    all_concrete = True
+    for out in model.graph.output:
+        width = static.get(out.name)
+        if width is None:
+            continue
+        if not _check_output_dims_proto(out, width, "declared"):
+            all_concrete = False
+
+    if not all_concrete:
+        inferred = onnx.shape_inference.infer_shapes(model)
+        for inf_out in inferred.graph.output:
+            width = static.get(inf_out.name)
+            if width is None:
+                continue
+            _check_output_dims_proto(inf_out, width, "inferred")
+
     for out in model.graph.output:
         width = static.get(out.name)
         if width is None:
@@ -175,6 +258,80 @@ def _gather_positions(hidden: torch.Tensor, positions: torch.Tensor) -> torch.Te
     safe = positions.clamp(min=0, max=seq_len - 1)
     index = safe.unsqueeze(-1).expand(-1, -1, hidden.shape[-1])
     return torch.gather(hidden, 1, index)
+
+
+def pool_causal_slot_hidden(
+    hidden: torch.Tensor,
+    seg_ids: torch.Tensor,
+    token_roles: torch.Tensor,
+    slot_positions: torch.Tensor,
+    valid_mask: torch.Tensor,
+    *,
+    num_candidates: int,
+    is_arg: bool,
+) -> torch.Tensor:
+    """Causal span pooling for NanoJev pointer keys using pure ONNX-opset-17 tensor ops.
+
+    Because ``<|pchunk|>`` and ``<|arg|>`` markers precede their content tokens while ``NanoJevCausalModel``
+    masks ``STATE`` rows causally (``j <= i``), gathering only at ``slot_positions`` would leave candidate
+    pointer keys blind to their own span content. For candidate slots ``s in 0..M-1``, this pools ``hidden``
+    across ``start_s`` plus valid content tokens of that chunk/arg up to ``next_start_s`` (excluding closing
+    ``[SEP]``, ``<|none|>``, ``QUERY``, and ``PAD``) via ``0.5 * (mean_pool + end_of_span_hidden)``, while
+    keeping the ``<|none|>`` slot ``M`` gathered at ``slot_positions[:, M]``. Avoids ``torch.where`` on
+    ``bool`` tensors for ORT CPU compatibility.
+    """
+    ones = torch.ones_like(token_roles)
+    t = torch.cumsum(ones, dim=1) - 1  # [B, L] int64
+    seq_len = torch.sum(ones, dim=1, keepdim=True)  # [B, 1] int64
+    zeros = torch.zeros_like(seq_len)
+    max_idx = seq_len - 1
+
+    start_s = torch.minimum(
+        torch.maximum(slot_positions[:, :num_candidates], zeros), max_idx
+    )  # [B, M]
+    none_pos = torch.minimum(
+        torch.maximum(slot_positions[:, num_candidates : num_candidates + 1], zeros), max_idx
+    )  # [B, 1]
+    valid_m = valid_mask[:, :num_candidates]  # [B, M] bool
+
+    later_valid = valid_m.unsqueeze(1) & (start_s.unsqueeze(1) > start_s.unsqueeze(2))  # [B, M, M]
+    lv_i64 = later_valid.to(dtype=torch.int64)
+    big = seq_len.unsqueeze(-1)  # [B, 1, 1]
+    cand = start_s.unsqueeze(1) * lv_i64 + big * (1 - lv_i64)
+    next_start_s = cand.amin(dim=-1)  # [B, M]
+
+    is_state = token_roles == ROLE_STATE
+    if is_arg:
+        # <|call|> uses seg_id == 4 and terminates with [SEP] immediately before <|none|> (none_pos).
+        is_sec = is_state & (seg_ids == 4) & (t < none_pos)
+    else:
+        # <|priv|> uses seg_id in {1, 2} and terminates with a closing [SEP] (seg_id == 1).
+        is_sec = is_state & ((seg_ids == 1) | (seg_ids == 2))
+    sec_sep = (t * is_sec.to(dtype=torch.int64)).amax(dim=1, keepdim=True)  # [B, 1]
+    is_content = is_sec & (t < sec_sep)  # [B, L] bool
+
+    t_1d = t.unsqueeze(1)  # [B, 1, L]
+    start_2d = start_s.unsqueeze(2)  # [B, M, 1]
+    next_2d = next_start_s.unsqueeze(2)  # [B, M, 1]
+    in_span = (t_1d == start_2d) | (
+        valid_m.unsqueeze(2)
+        & (t_1d > start_2d)
+        & (t_1d < next_2d)
+        & is_content.unsqueeze(1)
+    )  # [B, M, L] bool
+
+    w = in_span.to(dtype=torch.float32)
+    hidden_f32 = hidden.float()
+    mean_pool = torch.matmul(w, hidden_f32) / w.sum(dim=-1, keepdim=True)  # [B, M, H]
+    end_pos = (t_1d * in_span.to(dtype=torch.int64)).amax(dim=-1)  # [B, M]
+    end_idx = end_pos.unsqueeze(-1).expand(-1, -1, hidden_f32.shape[-1])
+    end_hidden = torch.gather(hidden_f32, 1, end_idx)  # [B, M, H]
+    cand_hidden = 0.5 * (mean_pool + end_hidden)
+
+    none_idx = none_pos.unsqueeze(-1).expand(-1, -1, hidden_f32.shape[-1])
+    none_hidden = torch.gather(hidden_f32, 1, none_idx)  # [B, 1, H]
+    slots_f32 = torch.cat([cand_hidden, none_hidden], dim=1)  # [B, M+1, H]
+    return slots_f32.to(dtype=hidden.dtype)
 
 
 class _JevModelBase(nn.Module):
@@ -205,8 +362,18 @@ class _JevModelBase(nn.Module):
         nn.init.normal_(self.seg_embedding.weight, std=0.02)
         dim = int(pointer_dim) if pointer_dim else hidden
         self.noul_head = NoulHead(hidden)
-        self.src_pointer = PointerHead(hidden, dim)
-        self.arg_pointer = PointerHead(hidden, dim)
+        self.src_pointer = PointerHead(
+            hidden,
+            dim,
+            causal_num_candidates=(SRC_SLOTS - 1) if self.causal else None,
+            causal_is_arg=False,
+        )
+        self.arg_pointer = PointerHead(
+            hidden,
+            dim,
+            causal_num_candidates=(ARG_SLOTS - 1) if self.causal else None,
+            causal_is_arg=True,
+        )
         self.register_buffer("logit_temperatures", torch.ones(NUM_NOUL_HEADS, dtype=torch.float32))
 
     # ------------------------------------------------------------------ construction
@@ -276,6 +443,26 @@ class _JevModelBase(nn.Module):
         return self._run_backbone(embeds, masks)
 
     # ------------------------------------------------------------------ heads
+    def extract_pointer_slot_states(
+        self,
+        hidden: torch.Tensor,
+        seg_ids: torch.Tensor,
+        token_roles: torch.Tensor,
+        pchunk_positions: torch.Tensor,
+        pchunk_valid_mask: torch.Tensor,
+        arg_positions: torch.Tensor,
+        arg_valid_mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return ``(src_slot_hidden[B,33,H], arg_slot_hidden[B,17,H])`` fed to the pointer heads."""
+        return (
+            self.src_pointer.pool_slots(
+                hidden, seg_ids, token_roles, pchunk_positions, pchunk_valid_mask
+            ),
+            self.arg_pointer.pool_slots(
+                hidden, seg_ids, token_roles, arg_positions, arg_valid_mask
+            ),
+        )
+
     def forward_logits(
         self,
         input_ids: torch.Tensor,
@@ -292,10 +479,20 @@ class _JevModelBase(nn.Module):
         q = _gather_positions(hidden, query_positions)  # [B, 5, H]
         noul_logits = self.noul_head(q[:, 0:3])
         src_logits = self.src_pointer(
-            q[:, 3], _gather_positions(hidden, pchunk_positions), pchunk_valid_mask
+            q[:, 3],
+            hidden,
+            pchunk_valid_mask,
+            seg_ids=seg_ids,
+            token_roles=token_roles,
+            slot_positions=pchunk_positions,
         )
         arg_logits = self.arg_pointer(
-            q[:, 4], _gather_positions(hidden, arg_positions), arg_valid_mask
+            q[:, 4],
+            hidden,
+            arg_valid_mask,
+            seg_ids=seg_ids,
+            token_roles=token_roles,
+            slot_positions=arg_positions,
         )
         return noul_logits.float(), src_logits.float(), arg_logits.float()
 
@@ -386,4 +583,5 @@ __all__ = [
     "PointerHead",
     "build_token_roles_attn_mask",
     "pin_onnx_output_shapes",
+    "pool_causal_slot_hidden",
 ]

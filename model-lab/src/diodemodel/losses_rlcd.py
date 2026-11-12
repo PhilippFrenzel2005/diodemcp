@@ -73,6 +73,37 @@ def _weighted_mean(values: torch.Tensor, weights: torch.Tensor | None, dim: int 
     return (values * weights).sum(dim=dim) / weights.sum(dim=dim).clamp(min=_EPS_DEN)
 
 
+def _normalise_sample_weights(
+    sample_weights: torch.Tensor | None,
+    *,
+    batch_size: int,
+    device: torch.device,
+    allow_per_head: bool = False,
+    name: str = "sample_weights",
+) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+    """Validate finiteness, non-negativity, shape, and device of ``sample_weights``.
+
+    Returns ``(per_head_weights[N, 3] | None, per_row_weights[N] | None)`` on ``(device, float32)``.
+    When ``allow_per_head=False`` (pointer weights), only ``(N,)`` is accepted so 2D ``(N, 1)`` /
+    ``(N, 3)`` tensors cannot silently broadcast to ``(N, N)``.
+    """
+    if sample_weights is None:
+        return None, None
+    w = torch.as_tensor(sample_weights).to(device=device, dtype=torch.float32)
+    if not bool(torch.isfinite(w).all()) or bool((w < 0).any()):
+        raise ValueError(f"{name} must be finite and non-negative")
+    if w.shape == (batch_size,):
+        if allow_per_head:
+            return w[:, None].expand(batch_size, 3), w
+        return None, w
+    if allow_per_head and w.shape == (batch_size, 3):
+        return w, None
+    expected = "(N,) or (N, 3)" if allow_per_head else "(N,)"
+    raise ValueError(
+        f"{name} must have shape {expected} with N={batch_size}; got {tuple(w.shape)}"
+    )
+
+
 def masked_pointer_cross_entropy(
     logits: torch.Tensor,
     targets: torch.Tensor,
@@ -88,6 +119,13 @@ def masked_pointer_cross_entropy(
     row is ignored. A non-ignored target on an invalid slot is a data bug and raises ``ValueError``.
     """
     logits = logits.float()
+    _, row_w = _normalise_sample_weights(
+        sample_weights,
+        batch_size=logits.shape[0],
+        device=logits.device,
+        allow_per_head=False,
+        name="sample_weights",
+    )
     valid = torch.cat([valid_mask[:, :-1], torch.ones_like(valid_mask[:, -1:])], dim=1)
     active = targets != ignore_index
     if validate_targets and bool(active.any()):
@@ -103,25 +141,9 @@ def masked_pointer_cross_entropy(
     per_row = F.cross_entropy(masked, safe_targets, reduction="none")
     per_row = torch.where(active, per_row, torch.zeros_like(per_row))
     weights = active.to(per_row.dtype)
-    if sample_weights is not None:
-        weights = weights * sample_weights.to(per_row.dtype)
+    if row_w is not None:
+        weights = weights * row_w.to(per_row.dtype)
     return (per_row * weights).sum() / weights.sum().clamp(min=_EPS_DEN)
-
-
-def _normalise_sample_weights(
-    sample_weights: torch.Tensor | None, n: int, like: torch.Tensor
-) -> tuple[torch.Tensor | None, torch.Tensor | None]:
-    """Return (per_head_weights[N,3] | None, per_row_weights[N] | None)."""
-    if sample_weights is None:
-        return None, None
-    w = sample_weights.to(device=like.device, dtype=torch.float32)
-    if bool((w < 0).any()) or not bool(torch.isfinite(w).all()):
-        raise ValueError("sample_weights must be finite and non-negative")
-    if w.shape == (n,):
-        return w[:, None].expand(n, 3), w
-    if w.shape == (n, 3):
-        return w, None
-    raise ValueError(f"sample_weights must have shape (N,) or (N, 3); got {tuple(w.shape)}")
 
 
 def compute_jev_loss(
@@ -144,10 +166,16 @@ def compute_jev_loss(
     ``pointer_sample_weights``: optional ``[N]`` override for the two pointer heads.
     """
     cfg = config or JevLossConfig()
-    y = noul_targets.float()
+    y = noul_targets.to(device=noul_logits.device, dtype=torch.float32)
     _check_binary_targets(y)
     n = noul_logits.shape[0]
-    head_w, row_w = _normalise_sample_weights(sample_weights, n, noul_logits)
+    head_w, row_w = _normalise_sample_weights(
+        sample_weights,
+        batch_size=n,
+        device=noul_logits.device,
+        allow_per_head=True,
+        name="sample_weights",
+    )
 
     logits = noul_logits.float()
     bce_ph = _weighted_mean(F.binary_cross_entropy_with_logits(logits, y, reduction="none"), head_w)
@@ -157,7 +185,13 @@ def compute_jev_loss(
 
     ptr_w = row_w
     if pointer_sample_weights is not None:
-        ptr_w = pointer_sample_weights.to(torch.float32)
+        _, ptr_w = _normalise_sample_weights(
+            pointer_sample_weights,
+            batch_size=n,
+            device=src_logits.device,
+            allow_per_head=False,
+            name="pointer_sample_weights",
+        )
     src_ce = masked_pointer_cross_entropy(
         src_logits, target_src_idx, pchunk_valid_mask, ignore_index=cfg.ignore_index, sample_weights=ptr_w
     )
@@ -263,13 +297,15 @@ def temperature_calibration_report(
 
     ``ece_val`` is the macro mean over heads of the *after* ECE (the manifest's single ``ece_val``).
     """
-    z = logits.detach().cpu().double().numpy()
+    z_t = logits.detach().cpu().double()
+    t_t = temperatures.detach().cpu().double()
+    z = z_t.numpy()
     y = targets.detach().cpu().double().numpy()
-    t = temperatures.detach().cpu().double().numpy()
+    t = t_t.numpy()
     ece_b, ece_a, nll_b, nll_a = [], [], [], []
     for h in range(z.shape[1]):
-        p_before = 1.0 / (1.0 + np.exp(-z[:, h]))
-        p_after = 1.0 / (1.0 + np.exp(-z[:, h] / t[h]))
+        p_before = torch.sigmoid(z_t[:, h]).numpy()
+        p_after = torch.sigmoid(z_t[:, h] / t_t[h]).numpy()
         ece_b.append(expected_calibration_error(p_before, y[:, h], num_bins))
         ece_a.append(expected_calibration_error(p_after, y[:, h], num_bins))
         nll_b.append(_nll(z[:, h], y[:, h], 1.0))
