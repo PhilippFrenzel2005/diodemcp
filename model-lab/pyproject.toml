@@ -1,0 +1,42 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "diodemodel"
+version = "0.1.0"
+description = "DiodeMCP Track A: Jev Cross-Encoder Model Lab, Dataset Factory & ONNX Bundle Exporter"
+license = "Apache-2.0"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "torch>=2.5",
+    "transformers>=4.48",
+    "tokenizers>=0.20",
+    "datasets>=3.0",
+    "pyarrow>=17.0",
+    "pydantic>=2.9",
+    "numpy>=1.26",
+    "onnx>=1.16",
+    "onnxruntime>=1.19",
+    "scipy>=1.13",
+    "scikit-learn>=1.5",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/diodemodel"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
