@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import base64
 from collections import OrderedDict
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 import json
 import os
 import random
@@ -193,37 +193,38 @@ def _sanitize_seed_text(text: str) -> str:
 
 
 def flatten_call_arguments(
-    arguments: dict[str, Any],
-    max_args: int = MAX_FLAT_ARGS,
+    arguments: Mapping[str, Any],
+    max_args: int | None = MAX_FLAT_ARGS,
 ) -> dict[str, str]:
-    """Flatten nested tool-call arguments using C3 dotted/indexed keys (e.g. headers.Authorization, items[0].val)."""
-    if max_args < 1:
+    """Flatten nested tool-call arguments using deterministic sorted C3 dotted/indexed keys."""
+    if max_args is not None and max_args < 1:
         raise ValueError("max_args must be >= 1")
     out: OrderedDict[str, str] = OrderedDict()
 
+    def _at_limit() -> bool:
+        return max_args is not None and len(out) >= max_args
+
     def _visit(prefix: str, value: Any) -> None:
-        if len(out) >= max_args:
+        if _at_limit():
             return
-        if isinstance(value, dict):
+        if isinstance(value, Mapping):
             if not value:
-                key = prefix or "args"
-                out[key] = "{}"
+                out[prefix or "args"] = "{}"
                 return
-            for sub_k, sub_v in value.items():
+            for sub_k, sub_v in sorted(value.items(), key=lambda kv: str(kv[0])):
                 key_str = str(sub_k)
                 child_prefix = f"{prefix}.{key_str}" if prefix else key_str
                 _visit(child_prefix, sub_v)
-                if len(out) >= max_args:
+                if _at_limit():
                     return
         elif isinstance(value, (list, tuple)):
             if not value:
-                key = prefix or "args"
-                out[key] = "[]"
+                out[prefix or "args"] = "[]"
                 return
             for idx, item in enumerate(value):
                 child_prefix = f"{prefix}[{idx}]" if prefix else f"[{idx}]"
                 _visit(child_prefix, item)
-                if len(out) >= max_args:
+                if _at_limit():
                     return
         elif isinstance(value, str):
             out[prefix or "value"] = value
@@ -660,6 +661,26 @@ def _intent_clause_authorizes_external_share(
     return False
 
 
+_READONLY_LOCAL_TOOLS: frozenset[str] = frozenset(
+    {
+        "read",
+        "grep",
+        "glob",
+        "view",
+        "read_file",
+        "list_directory",
+        "list_files",
+        "search_files",
+    }
+)
+
+
+def _is_readonly_local_tool(server: str, tool: str, flat_args: Mapping[str, str]) -> bool:
+    return tool.strip().lower() in _READONLY_LOCAL_TOOLS and not _is_external_sink(
+        server, tool, dict(flat_args)
+    )
+
+
 def apply_missing_intent_mask(pair: JevTrainingPair) -> JevTrainingPair:
     """Mask `intent -> None` (`<|missing_intent|>`) with strict fail-closed relabeling."""
     flat_args = flatten_call_arguments(pair.call_arguments)
@@ -694,8 +715,14 @@ def apply_missing_intent_mask(pair: JevTrainingPair) -> JevTrainingPair:
             arg_key = hit_arg_key
 
     # Under untrusted/dual-trust taint, previously intent-authorized destructive mutations fail closed
+    # (exempting purely read-only local tools like Read/Grep/Glob/read_file/list_directory).
     has_untrusted = bool(pair.untrusted_spans) or any(sp.dual_trust for sp in pair.private_spans)
-    if was_safe and y_hijack < 0.5 and has_untrusted:
+    if (
+        was_safe
+        and y_hijack < 0.5
+        and has_untrusted
+        and not _is_readonly_local_tool(pair.call_server, pair.call_tool, flat_args)
+    ):
         for k, v in flat_args.items():
             if _DESTRUCTIVE_OR_PERSISTENCE_RE.search(v):
                 y_hijack = 1.0
