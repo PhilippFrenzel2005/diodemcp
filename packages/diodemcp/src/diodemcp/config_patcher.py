@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 import copy
 import hashlib
 import json
@@ -10,8 +11,16 @@ import os
 from pathlib import Path
 import secrets
 import shlex
+import shutil
 import stat
+import subprocess
+import sys
 from typing import Any
+
+if os.name == "posix":
+    import fcntl
+elif os.name == "nt":
+    import msvcrt
 
 from diodemcp.constants import DEFAULT_STATE_DIR
 from diodemcp.transport import (
@@ -24,6 +33,7 @@ from diodemcp.transport import (
 PROTECTED_OAUTH_WARNING: str = (
     "PROTECTED via IDE Hooks; MCP OAuth transport left native"
 )
+DEFAULT_CLAUDE_HOOK_TIMEOUT_SECONDS: int = 30
 
 CLAUDE_HOOK_EVENTS: tuple[str, ...] = (
     "UserPromptSubmit",
@@ -32,7 +42,9 @@ CLAUDE_HOOK_EVENTS: tuple[str, ...] = (
 )
 CURSOR_HOOK_EVENTS: tuple[str, ...] = (
     "beforeShellExecution",
+    "afterShellExecution",
     "beforeMCPExecution",
+    "afterMCPExecution",
     "beforeReadFile",
     "afterFileEdit",
 )
@@ -199,6 +211,81 @@ def _read_existing_config(path: Path) -> tuple[bool, bytes, dict[str, Any], int 
     return True, raw_bytes, parsed, mode
 
 
+def _resolve_diodemcp_cmd_parts(diodemcp_bin: str | None) -> list[str]:
+    """Resolve explicit command parts (`[sys.executable, '-m', 'diodemcp']` by default) for GUI-IDE safety."""
+    if diodemcp_bin is not None and diodemcp_bin.strip():
+        return [diodemcp_bin.strip()]
+    if sys.executable:
+        # Use abspath (not realpath) so venv python symlinks preserve site-packages resolution.
+        return [os.path.abspath(sys.executable), "-m", "diodemcp"]
+    found = shutil.which("diodemcp")
+    return [found if found else "diodemcp"]
+
+
+def _format_command_line(parts: Sequence[str]) -> str:
+    """Format an argv sequence as a platform-safe command string (POSIX shlex / Windows list2cmdline)."""
+    str_parts = [str(p) for p in parts]
+    if os.name == "nt":
+        return subprocess.list2cmdline(str_parts)
+    return " ".join(shlex.quote(p) for p in str_parts)
+
+
+@contextmanager
+def _config_advisory_lock(
+    cfg_path: Path,
+    *,
+    locks_dir: Path,
+) -> Iterator[None]:
+    """Acquire cross-process advisory file lock (`fcntl`/`msvcrt`) around JSON config read-modify-replace."""
+    ensure_private_dir(locks_dir)
+    digest = hashlib.sha256(str(cfg_path).encode("utf-8")).hexdigest()[:16]
+    lock_file = locks_dir / f"{digest}.lock"
+
+    lock_fd = os.open(str(lock_file), os.O_CREAT | os.O_RDWR, 0o600)
+    target_fd: int | None = None
+    try:
+        if os.name == "posix":
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            if cfg_path.exists() and not cfg_path.is_symlink():
+                try:
+                    st = cfg_path.lstat()
+                    if stat.S_ISREG(st.st_mode):
+                        target_fd = os.open(str(cfg_path), os.O_RDONLY)
+                        fcntl.flock(target_fd, fcntl.LOCK_EX)
+                except OSError:
+                    if target_fd is not None:
+                        try:
+                            os.close(target_fd)
+                        except OSError:
+                            pass
+                        target_fd = None
+        elif os.name == "nt":
+            msvcrt.locking(lock_fd, msvcrt.LK_LOCK, 1)
+        yield
+    finally:
+        if target_fd is not None:
+            try:
+                if os.name == "posix":
+                    fcntl.flock(target_fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            try:
+                os.close(target_fd)
+            except OSError:
+                pass
+        try:
+            if os.name == "posix":
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            elif os.name == "nt":
+                msvcrt.locking(lock_fd, msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
+        try:
+            os.close(lock_fd)
+        except OSError:
+            pass
+
+
 def _is_diodemcp_shim_entry(entry: Any) -> bool:
     if not isinstance(entry, Mapping):
         return False
@@ -208,22 +295,36 @@ def _is_diodemcp_shim_entry(entry: Any) -> bool:
     args_list = [str(a) for a in raw_args]
     if len(args_list) >= 3 and args_list[0] == "shim" and "--server" in args_list:
         return True
+    if (
+        len(args_list) >= 5
+        and args_list[:3] == ["-m", "diodemcp", "shim"]
+        and "--server" in args_list
+    ):
+        return True
     return False
+
+
+def _strip_module_prefix_from_shim_args(args_list: Sequence[str]) -> list[str]:
+    items = [str(a) for a in args_list]
+    if len(items) >= 3 and items[:3] == ["-m", "diodemcp", "shim"]:
+        return items[2:]
+    return items
 
 
 def _is_diodemcp_hook_cmd(cmd: Any) -> bool:
     if not isinstance(cmd, str):
         return False
     try:
-        tokens = shlex.split(cmd.strip())
+        tokens = shlex.split(cmd.strip(), posix=(os.name != "nt"))
     except ValueError:
         tokens = cmd.strip().split()
-    for idx in range(len(tokens) - 2):
-        tok_base = os.path.basename(tokens[idx]).lower()
+    cleaned = [tok.strip("\"'") for tok in tokens]
+    for idx in range(len(cleaned) - 2):
+        tok_base = os.path.basename(cleaned[idx]).lower()
         if (
             "diodemcp" in tok_base
-            and tokens[idx + 1] == "hook"
-            and tokens[idx + 2] in ("claude", "cursor", "agy")
+            and cleaned[idx + 1] == "hook"
+            and cleaned[idx + 2] in ("claude", "cursor", "agy")
         ):
             return True
     return False
@@ -235,7 +336,9 @@ def _reconstruct_unwrapped_server_from_shim(
     shim_headers: Mapping[str, Any],
 ) -> dict[str, Any]:
     """Fallback reconstruction of original server config from a `diodemcp shim` entry."""
-    args_list = [str(a) for a in (shim_entry.get("args") or [])]
+    args_list = _strip_module_prefix_from_shim_args(
+        [str(a) for a in (shim_entry.get("args") or [])]
+    )
     extra_keys = {
         k: copy.deepcopy(v)
         for k, v in shim_entry.items()
@@ -267,12 +370,13 @@ def _reconstruct_unwrapped_server_from_shim(
 def _patch_claude_hooks(
     hooks_dict: dict[str, Any],
     *,
-    diodemcp_bin: str,
+    cmd_parts: Sequence[str],
     state_dir: Path,
 ) -> None:
-    quoted_state = shlex.quote(str(state_dir))
     for ev in CLAUDE_HOOK_EVENTS:
-        cmd_str = f"{diodemcp_bin} hook claude {ev} --state-dir {quoted_state}"
+        cmd_str = _format_command_line(
+            [*cmd_parts, "hook", "claude", ev, "--state-dir", str(state_dir)]
+        )
         ev_list = hooks_dict.get(ev)
         if not isinstance(ev_list, list):
             ev_list = []
@@ -289,12 +393,19 @@ def _patch_claude_hooks(
                 if isinstance(h, dict) and _is_diodemcp_hook_cmd(h.get("command")):
                     h["type"] = "command"
                     h["command"] = cmd_str
+                    h["timeout"] = DEFAULT_CLAUDE_HOOK_TIMEOUT_SECONDS
                     updated = True
         if not updated:
             ev_list.append(
                 {
                     "matcher": "*",
-                    "hooks": [{"type": "command", "command": cmd_str}],
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": cmd_str,
+                            "timeout": DEFAULT_CLAUDE_HOOK_TIMEOUT_SECONDS,
+                        }
+                    ],
                 }
             )
 
@@ -338,12 +449,13 @@ def _patch_simple_command_hooks(
     *,
     ide_tag: str,
     events: Sequence[str],
-    diodemcp_bin: str,
+    cmd_parts: Sequence[str],
     state_dir: Path,
 ) -> None:
-    quoted_state = shlex.quote(str(state_dir))
     for ev in events:
-        cmd_str = f"{diodemcp_bin} hook {ide_tag} {ev} --state-dir {quoted_state}"
+        cmd_str = _format_command_line(
+            [*cmd_parts, "hook", ide_tag, ev, "--state-dir", str(state_dir)]
+        )
         ev_list = hooks_dict.get(ev)
         if not isinstance(ev_list, list):
             ev_list = []
@@ -420,6 +532,158 @@ def _collect_target_specs(
     return specs
 
 
+def _wrap_mcp_servers_dict(
+    mcp_servers: dict[str, Any],
+    *,
+    saved_srv_map: dict[str, Any],
+    shim_headers: dict[str, dict[str, str]],
+    cmd_parts: Sequence[str],
+    resolved_state: Path,
+    wrapped_servers: list[str],
+    skipped_oauth_servers: list[str],
+    skipped_sse_servers: list[str],
+    warnings: list[str],
+) -> None:
+    cmd_exe = str(cmd_parts[0])
+    cmd_prefix = [str(p) for p in cmd_parts[1:]]
+
+    for srv_name, srv_entry in list(mcp_servers.items()):
+        if not isinstance(srv_entry, dict):
+            continue
+
+        if _is_diodemcp_shim_entry(srv_entry):
+            # Already shimmed: update state_dir / command parts in place idempotently
+            srv_entry["command"] = cmd_exe
+            shim_tail = _strip_module_prefix_from_shim_args(
+                [str(a) for a in (srv_entry.get("args") or [])]
+            )
+            if "--state-dir" in shim_tail:
+                sd_idx = shim_tail.index("--state-dir")
+                if sd_idx + 1 < len(shim_tail):
+                    shim_tail[sd_idx + 1] = str(resolved_state)
+            srv_entry["args"] = [*cmd_prefix, *shim_tail]
+            if srv_name not in wrapped_servers:
+                wrapped_servers.append(srv_name)
+            continue
+
+        raw_cmd = srv_entry.get("command")
+        if isinstance(raw_cmd, str) and raw_cmd.strip():
+            if srv_name not in saved_srv_map:
+                saved_srv_map[srv_name] = copy.deepcopy(srv_entry)
+            orig_args = [str(a) for a in (srv_entry.get("args") or [])]
+            new_entry = {
+                k: copy.deepcopy(v)
+                for k, v in srv_entry.items()
+                if k not in ("command", "args")
+            }
+            new_entry["command"] = cmd_exe
+            new_entry["args"] = [
+                *cmd_prefix,
+                "shim",
+                "--server",
+                srv_name,
+                "--state-dir",
+                str(resolved_state),
+                "--",
+                raw_cmd,
+                *orig_args,
+            ]
+            mcp_servers[srv_name] = new_entry
+            if srv_name not in wrapped_servers:
+                wrapped_servers.append(srv_name)
+            continue
+
+        url_key = (
+            "url"
+            if "url" in srv_entry
+            else ("serverUrl" if "serverUrl" in srv_entry else None)
+        )
+        if url_key is not None and isinstance(srv_entry.get(url_key), str):
+            url_val = str(srv_entry[url_key]).strip()
+            srv_type = str(srv_entry.get("type") or "").strip().lower()
+            if srv_type == "sse":
+                if srv_name not in skipped_sse_servers:
+                    skipped_sse_servers.append(srv_name)
+                warn_str = (
+                    f"Server '{srv_name}' ({url_val}): "
+                    f"Skipped legacy SSE transport (type='sse') in POST-only bridge; "
+                    f"{PROTECTED_OAUTH_WARNING}"
+                )
+                if warn_str not in warnings:
+                    warnings.append(warn_str)
+                continue
+
+            raw_hdrs = srv_entry.get("headers")
+            static_hdrs = (
+                {
+                    str(k): str(v)
+                    for k, v in raw_hdrs.items()
+                    if isinstance(k, str)
+                    and isinstance(v, str)
+                    and v.strip()
+                }
+                if isinstance(raw_hdrs, Mapping)
+                else {}
+            )
+            if static_hdrs:
+                if srv_name not in saved_srv_map:
+                    saved_srv_map[srv_name] = copy.deepcopy(srv_entry)
+                shim_headers[srv_name] = static_hdrs
+                excluded_keys = {"url", "serverUrl", "headers", "command", "args"}
+                if srv_type and srv_type != "stdio":
+                    excluded_keys.add("type")
+                new_entry = {
+                    k: copy.deepcopy(v)
+                    for k, v in srv_entry.items()
+                    if k not in excluded_keys
+                }
+                new_entry["command"] = cmd_exe
+                new_entry["args"] = [
+                    *cmd_prefix,
+                    "shim",
+                    "--server",
+                    srv_name,
+                    "--state-dir",
+                    str(resolved_state),
+                    "--url",
+                    url_val,
+                ]
+                mcp_servers[srv_name] = new_entry
+                if srv_name not in wrapped_servers:
+                    wrapped_servers.append(srv_name)
+            else:
+                # OAuth-2.1 browser-flow remote URL server: leave native (I14)
+                if srv_name not in skipped_oauth_servers:
+                    skipped_oauth_servers.append(srv_name)
+                warn_str = (
+                    f"Server '{srv_name}' ({url_val}): "
+                    f"{PROTECTED_OAUTH_WARNING}"
+                )
+                if warn_str not in warnings:
+                    warnings.append(warn_str)
+
+
+def _unwrap_mcp_servers_dict(
+    mcp_servers: dict[str, Any],
+    *,
+    saved_srv_map: Mapping[str, Any],
+    shim_headers: dict[str, Any],
+    restored_servers: list[str],
+) -> None:
+    for srv_name, srv_entry in list(mcp_servers.items()):
+        if not _is_diodemcp_shim_entry(srv_entry):
+            continue
+        if srv_name in saved_srv_map:
+            mcp_servers[srv_name] = copy.deepcopy(saved_srv_map[srv_name])
+        else:
+            mcp_servers[srv_name] = _reconstruct_unwrapped_server_from_shim(
+                srv_name, srv_entry, shim_headers
+            )
+        if srv_name not in restored_servers:
+            restored_servers.append(srv_name)
+        shim_headers.pop(srv_name, None)
+
+
 def wrap_ide_configs(
     *,
     target: str | Sequence[str] = "all",
@@ -427,7 +691,7 @@ def wrap_ide_configs(
     home_dir: Path | str | None = None,
     workspace_root: Path | str | None = None,
     include_workspace: bool = False,
-    diodemcp_bin: str = "diodemcp",
+    diodemcp_bin: str | None = None,
 ) -> dict[str, Any]:
     """Atomically backup (`0600`) and wrap target IDE MCP servers & native hooks (`I14`, `I15`)."""
     resolved_home = (
@@ -450,6 +714,8 @@ def wrap_ide_configs(
         else Path.cwd().resolve()
     )
     backups_dir = ensure_private_dir(resolved_state / "backups")
+    locks_dir = ensure_private_dir(resolved_state / "locks")
+    cmd_parts = _resolve_diodemcp_cmd_parts(diodemcp_bin)
 
     manifest_path = resolved_state / "wrapped_configs.json"
     shim_headers_path = resolved_state / "shim_headers.json"
@@ -469,174 +735,108 @@ def wrap_ide_configs(
     wrapped_files: list[str] = []
     wrapped_servers: list[str] = []
     skipped_oauth_servers: list[str] = []
+    skipped_sse_servers: list[str] = []
     warnings: list[str] = []
 
     for ide, cfg_path, has_mcp, has_hooks in specs:
-        existed, raw_bytes, data, orig_mode = _read_existing_config(cfg_path)
-        path_key = str(cfg_path)
+        with _config_advisory_lock(cfg_path, locks_dir=locks_dir):
+            existed, raw_bytes, data, orig_mode = _read_existing_config(cfg_path)
+            path_key = str(cfg_path)
 
-        file_record = files_meta.get(path_key)
-        if not isinstance(file_record, dict) or file_record.get("unwrapped", False):
-            backup_path: str | None = None
-            if existed:
-                digest = hashlib.sha256(path_key.encode("utf-8")).hexdigest()[:12]
-                bak_file = backups_dir / f"{digest}_{cfg_path.name}.bak"
-                atomic_write_private_bytes(bak_file, raw_bytes)
-                backup_path = str(bak_file)
-            file_record = {
-                "ide": ide,
-                "path": path_key,
-                "existed_before_wrap": existed,
-                "backup_file": backup_path,
-                "pre_wrap_data": copy.deepcopy(data),
-                "wrapped_servers": {},
-                "unwrapped": False,
-            }
-            files_meta[path_key] = file_record
+            file_record = files_meta.get(path_key)
+            if not isinstance(file_record, dict) or file_record.get("unwrapped", False):
+                backup_path: str | None = None
+                if existed:
+                    digest = hashlib.sha256(path_key.encode("utf-8")).hexdigest()[:12]
+                    bak_file = backups_dir / f"{digest}_{cfg_path.name}.bak"
+                    atomic_write_private_bytes(bak_file, raw_bytes)
+                    backup_path = str(bak_file)
+                file_record = {
+                    "ide": ide,
+                    "path": path_key,
+                    "existed_before_wrap": existed,
+                    "backup_file": backup_path,
+                    "pre_wrap_data": copy.deepcopy(data),
+                    "wrapped_servers": {},
+                    "wrapped_project_servers": {},
+                    "unwrapped": False,
+                }
+                files_meta[path_key] = file_record
 
-        saved_srv_map: dict[str, Any] = file_record.setdefault("wrapped_servers", {})
+            saved_srv_map: dict[str, Any] = file_record.setdefault("wrapped_servers", {})
+            saved_proj_map: dict[str, Any] = file_record.setdefault(
+                "wrapped_project_servers", {}
+            )
 
-        if has_mcp:
-            mcp_servers = data.get("mcpServers")
-            if isinstance(mcp_servers, dict):
-                for srv_name, srv_entry in list(mcp_servers.items()):
-                    if not isinstance(srv_entry, dict):
-                        continue
-
-                    if _is_diodemcp_shim_entry(srv_entry):
-                        # Already shimmed: update state_dir / diodemcp_bin in place idempotently
-                        srv_entry["command"] = diodemcp_bin
-                        raw_args = [str(a) for a in (srv_entry.get("args") or [])]
-                        if "--state-dir" in raw_args:
-                            sd_idx = raw_args.index("--state-dir")
-                            if sd_idx + 1 < len(raw_args):
-                                raw_args[sd_idx + 1] = str(resolved_state)
-                        srv_entry["args"] = raw_args
-                        if srv_name not in wrapped_servers:
-                            wrapped_servers.append(srv_name)
-                        continue
-
-                    raw_cmd = srv_entry.get("command")
-                    if isinstance(raw_cmd, str) and raw_cmd.strip():
-                        if srv_name not in saved_srv_map:
-                            saved_srv_map[srv_name] = copy.deepcopy(srv_entry)
-                        orig_args = [str(a) for a in (srv_entry.get("args") or [])]
-                        new_entry = {
-                            k: copy.deepcopy(v)
-                            for k, v in srv_entry.items()
-                            if k not in ("command", "args")
-                        }
-                        new_entry["command"] = diodemcp_bin
-                        new_entry["args"] = [
-                            "shim",
-                            "--server",
-                            srv_name,
-                            "--state-dir",
-                            str(resolved_state),
-                            "--",
-                            raw_cmd,
-                            *orig_args,
-                        ]
-                        mcp_servers[srv_name] = new_entry
-                        if srv_name not in wrapped_servers:
-                            wrapped_servers.append(srv_name)
-                        continue
-
-                    url_key = (
-                        "url"
-                        if "url" in srv_entry
-                        else ("serverUrl" if "serverUrl" in srv_entry else None)
+            if has_mcp:
+                mcp_servers = data.get("mcpServers")
+                if isinstance(mcp_servers, dict):
+                    _wrap_mcp_servers_dict(
+                        mcp_servers,
+                        saved_srv_map=saved_srv_map,
+                        shim_headers=shim_headers,
+                        cmd_parts=cmd_parts,
+                        resolved_state=resolved_state,
+                        wrapped_servers=wrapped_servers,
+                        skipped_oauth_servers=skipped_oauth_servers,
+                        skipped_sse_servers=skipped_sse_servers,
+                        warnings=warnings,
                     )
-                    if url_key is not None and isinstance(srv_entry.get(url_key), str):
-                        url_val = str(srv_entry[url_key]).strip()
-                        raw_hdrs = srv_entry.get("headers")
-                        static_hdrs = (
-                            {
-                                str(k): str(v)
-                                for k, v in raw_hdrs.items()
-                                if isinstance(k, str)
-                                and isinstance(v, str)
-                                and v.strip()
-                            }
-                            if isinstance(raw_hdrs, Mapping)
-                            else {}
-                        )
-                        if static_hdrs:
-                            if srv_name not in saved_srv_map:
-                                saved_srv_map[srv_name] = copy.deepcopy(srv_entry)
-                            shim_headers[srv_name] = static_hdrs
-                            new_entry = {
-                                k: copy.deepcopy(v)
-                                for k, v in srv_entry.items()
-                                if k
-                                not in (
-                                    "url",
-                                    "serverUrl",
-                                    "headers",
-                                    "command",
-                                    "args",
-                                )
-                            }
-                            new_entry["command"] = diodemcp_bin
-                            new_entry["args"] = [
-                                "shim",
-                                "--server",
-                                srv_name,
-                                "--state-dir",
-                                str(resolved_state),
-                                "--url",
-                                url_val,
-                            ]
-                            mcp_servers[srv_name] = new_entry
-                            if srv_name not in wrapped_servers:
-                                wrapped_servers.append(srv_name)
-                        else:
-                            # OAuth-2.1 browser-flow remote URL server: leave native (I14)
-                            if srv_name not in skipped_oauth_servers:
-                                skipped_oauth_servers.append(srv_name)
-                            warn_str = (
-                                f"Server '{srv_name}' ({url_val}): "
-                                f"{PROTECTED_OAUTH_WARNING}"
+                if ide == "claude" and isinstance(data.get("projects"), dict):
+                    for proj_key, proj_obj in data["projects"].items():
+                        if not isinstance(proj_obj, dict):
+                            continue
+                        proj_mcp = proj_obj.get("mcpServers")
+                        if isinstance(proj_mcp, dict):
+                            proj_saved = saved_proj_map.setdefault(str(proj_key), {})
+                            _wrap_mcp_servers_dict(
+                                proj_mcp,
+                                saved_srv_map=proj_saved,
+                                shim_headers=shim_headers,
+                                cmd_parts=cmd_parts,
+                                resolved_state=resolved_state,
+                                wrapped_servers=wrapped_servers,
+                                skipped_oauth_servers=skipped_oauth_servers,
+                                skipped_sse_servers=skipped_sse_servers,
+                                warnings=warnings,
                             )
-                            if warn_str not in warnings:
-                                warnings.append(warn_str)
 
-        if has_hooks:
-            if ide == "cursor" and "version" not in data:
-                data["version"] = 1
-            hooks_dict = data.get("hooks")
-            if not isinstance(hooks_dict, dict):
-                hooks_dict = {}
-                data["hooks"] = hooks_dict
+            if has_hooks:
+                if ide == "cursor" and "version" not in data:
+                    data["version"] = 1
+                hooks_dict = data.get("hooks")
+                if not isinstance(hooks_dict, dict):
+                    hooks_dict = {}
+                    data["hooks"] = hooks_dict
 
-            if ide == "claude":
-                _patch_claude_hooks(
-                    hooks_dict,
-                    diodemcp_bin=diodemcp_bin,
-                    state_dir=resolved_state,
-                )
-            elif ide == "cursor":
-                _patch_simple_command_hooks(
-                    hooks_dict,
-                    ide_tag="cursor",
-                    events=CURSOR_HOOK_EVENTS,
-                    diodemcp_bin=diodemcp_bin,
-                    state_dir=resolved_state,
-                )
-            elif ide == "agy":
-                _patch_simple_command_hooks(
-                    hooks_dict,
-                    ide_tag="agy",
-                    events=AGY_HOOK_EVENTS,
-                    diodemcp_bin=diodemcp_bin,
-                    state_dir=resolved_state,
-                )
+                if ide == "claude":
+                    _patch_claude_hooks(
+                        hooks_dict,
+                        cmd_parts=cmd_parts,
+                        state_dir=resolved_state,
+                    )
+                elif ide == "cursor":
+                    _patch_simple_command_hooks(
+                        hooks_dict,
+                        ide_tag="cursor",
+                        events=CURSOR_HOOK_EVENTS,
+                        cmd_parts=cmd_parts,
+                        state_dir=resolved_state,
+                    )
+                elif ide == "agy":
+                    _patch_simple_command_hooks(
+                        hooks_dict,
+                        ide_tag="agy",
+                        events=AGY_HOOK_EVENTS,
+                        cmd_parts=cmd_parts,
+                        state_dir=resolved_state,
+                    )
 
-        serialized = (
-            json.dumps(data, indent=2, ensure_ascii=False) + "\n"
-        ).encode("utf-8")
-        _atomic_write_config_bytes(cfg_path, serialized, preserve_mode=orig_mode)
-        wrapped_files.append(path_key)
+            serialized = (
+                json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+            ).encode("utf-8")
+            _atomic_write_config_bytes(cfg_path, serialized, preserve_mode=orig_mode)
+            wrapped_files.append(path_key)
 
     atomic_write_private_json(shim_headers_path, shim_headers)
     atomic_write_private_json(
@@ -644,6 +844,7 @@ def wrap_ide_configs(
         {
             "files": files_meta,
             "skipped_oauth_servers": skipped_oauth_servers,
+            "skipped_sse_servers": skipped_sse_servers,
             "warnings": warnings,
         },
     )
@@ -652,6 +853,7 @@ def wrap_ide_configs(
         "wrapped_files": wrapped_files,
         "wrapped_servers": wrapped_servers,
         "skipped_oauth_servers": skipped_oauth_servers,
+        "skipped_sse_servers": skipped_sse_servers,
         "warnings": warnings,
         "state_dir": str(resolved_state),
     }
@@ -685,6 +887,7 @@ def unwrap_ide_configs(
         if workspace_root is not None
         else Path.cwd().resolve()
     )
+    locks_dir = ensure_private_dir(resolved_state / "locks")
 
     manifest_path = resolved_state / "wrapped_configs.json"
     shim_headers_path = resolved_state / "shim_headers.json"
@@ -706,106 +909,124 @@ def unwrap_ide_configs(
     for ide, cfg_path, has_mcp, has_hooks in specs:
         if not cfg_path.exists():
             continue
-        existed, _raw_bytes, data, orig_mode = _read_existing_config(cfg_path)
-        if not existed:
-            continue
-
-        path_key = str(cfg_path)
-        file_record = files_meta.get(path_key)
-        pre_wrap_data = (
-            file_record.get("pre_wrap_data")
-            if isinstance(file_record, Mapping)
-            and isinstance(file_record.get("pre_wrap_data"), dict)
-            else None
-        )
-        saved_srv_map = (
-            file_record.get("wrapped_servers")
-            if isinstance(file_record, Mapping)
-            and isinstance(file_record.get("wrapped_servers"), Mapping)
-            else {}
-        )
-        existed_before_wrap = (
-            bool(file_record.get("existed_before_wrap", True))
-            if isinstance(file_record, Mapping)
-            else True
-        )
-        backup_file_str = (
-            file_record.get("backup_file")
-            if isinstance(file_record, Mapping)
-            else None
-        )
-
-        if has_mcp and isinstance(data.get("mcpServers"), dict):
-            mcp_servers = data["mcpServers"]
-            for srv_name, srv_entry in list(mcp_servers.items()):
-                if not _is_diodemcp_shim_entry(srv_entry):
-                    continue
-                if srv_name in saved_srv_map:
-                    mcp_servers[srv_name] = copy.deepcopy(saved_srv_map[srv_name])
-                else:
-                    mcp_servers[srv_name] = _reconstruct_unwrapped_server_from_shim(
-                        srv_name, srv_entry, shim_headers
-                    )
-                if srv_name not in restored_servers:
-                    restored_servers.append(srv_name)
-                shim_headers.pop(srv_name, None)
-
-        if has_hooks and isinstance(data.get("hooks"), dict):
-            pre_hooks = (
-                pre_wrap_data.get("hooks")
-                if isinstance(pre_wrap_data, Mapping)
-                and isinstance(pre_wrap_data.get("hooks"), Mapping)
-                else None
-            )
-            if ide == "claude":
-                _unpatch_claude_hooks(data["hooks"], pre_hooks)
-            else:
-                _unpatch_simple_command_hooks(data["hooks"], pre_hooks)
-
-            if not data["hooks"] and (
-                pre_wrap_data is None or "hooks" not in pre_wrap_data
-            ):
-                data.pop("hooks", None)
-
-        if not existed_before_wrap:
-            # File was created by wrap_ide_configs: delete if empty/default, else write remaining user entries
-            remaining_keys = {k: v for k, v in data.items() if k != "version" or v != 1}
-            if not remaining_keys:
-                try:
-                    cfg_path.unlink(missing_ok=True)
-                except OSError:
-                    pass
-                if isinstance(file_record, dict):
-                    file_record["unwrapped"] = True
-                unwrapped_files.append(path_key)
+        with _config_advisory_lock(cfg_path, locks_dir=locks_dir):
+            existed, _raw_bytes, data, orig_mode = _read_existing_config(cfg_path)
+            if not existed:
                 continue
 
-        # Byte-faithful restore if structurally identical to pre_wrap_data and backup exists
-        restored_exact_bytes = False
-        if (
-            pre_wrap_data is not None
-            and data == pre_wrap_data
-            and isinstance(backup_file_str, str)
-            and backup_file_str
-        ):
-            bak_path = Path(backup_file_str)
-            if _is_safe_0600_regular_file(bak_path):
-                _atomic_write_config_bytes(
-                    cfg_path,
-                    bak_path.read_bytes(),
-                    preserve_mode=orig_mode,
+            path_key = str(cfg_path)
+            file_record = files_meta.get(path_key)
+            pre_wrap_data = (
+                file_record.get("pre_wrap_data")
+                if isinstance(file_record, Mapping)
+                and isinstance(file_record.get("pre_wrap_data"), dict)
+                else None
+            )
+            saved_srv_map = (
+                file_record.get("wrapped_servers")
+                if isinstance(file_record, Mapping)
+                and isinstance(file_record.get("wrapped_servers"), Mapping)
+                else {}
+            )
+            saved_proj_map = (
+                file_record.get("wrapped_project_servers")
+                if isinstance(file_record, Mapping)
+                and isinstance(file_record.get("wrapped_project_servers"), Mapping)
+                else {}
+            )
+            existed_before_wrap = (
+                bool(file_record.get("existed_before_wrap", True))
+                if isinstance(file_record, Mapping)
+                else True
+            )
+            backup_file_str = (
+                file_record.get("backup_file")
+                if isinstance(file_record, Mapping)
+                else None
+            )
+
+            if has_mcp:
+                if isinstance(data.get("mcpServers"), dict):
+                    _unwrap_mcp_servers_dict(
+                        data["mcpServers"],
+                        saved_srv_map=saved_srv_map,
+                        shim_headers=shim_headers,
+                        restored_servers=restored_servers,
+                    )
+                if ide == "claude" and isinstance(data.get("projects"), dict):
+                    for proj_key, proj_obj in data["projects"].items():
+                        if not isinstance(proj_obj, dict):
+                            continue
+                        proj_mcp = proj_obj.get("mcpServers")
+                        if isinstance(proj_mcp, dict):
+                            proj_saved = (
+                                saved_proj_map.get(str(proj_key), {})
+                                if isinstance(saved_proj_map.get(str(proj_key)), Mapping)
+                                else {}
+                            )
+                            _unwrap_mcp_servers_dict(
+                                proj_mcp,
+                                saved_srv_map=proj_saved,
+                                shim_headers=shim_headers,
+                                restored_servers=restored_servers,
+                            )
+
+            if has_hooks and isinstance(data.get("hooks"), dict):
+                pre_hooks = (
+                    pre_wrap_data.get("hooks")
+                    if isinstance(pre_wrap_data, Mapping)
+                    and isinstance(pre_wrap_data.get("hooks"), Mapping)
+                    else None
                 )
-                restored_exact_bytes = True
+                if ide == "claude":
+                    _unpatch_claude_hooks(data["hooks"], pre_hooks)
+                else:
+                    _unpatch_simple_command_hooks(data["hooks"], pre_hooks)
 
-        if not restored_exact_bytes:
-            serialized = (
-                json.dumps(data, indent=2, ensure_ascii=False) + "\n"
-            ).encode("utf-8")
-            _atomic_write_config_bytes(cfg_path, serialized, preserve_mode=orig_mode)
+                if not data["hooks"] and (
+                    pre_wrap_data is None or "hooks" not in pre_wrap_data
+                ):
+                    data.pop("hooks", None)
 
-        if isinstance(file_record, dict):
-            file_record["unwrapped"] = True
-        unwrapped_files.append(path_key)
+            if not existed_before_wrap:
+                # File was created by wrap_ide_configs: delete if empty/default, else write remaining user entries
+                remaining_keys = {k: v for k, v in data.items() if k != "version" or v != 1}
+                if not remaining_keys:
+                    try:
+                        cfg_path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                    if isinstance(file_record, dict):
+                        file_record["unwrapped"] = True
+                    unwrapped_files.append(path_key)
+                    continue
+
+            # Byte-faithful restore if structurally identical to pre_wrap_data and backup exists
+            restored_exact_bytes = False
+            if (
+                pre_wrap_data is not None
+                and data == pre_wrap_data
+                and isinstance(backup_file_str, str)
+                and backup_file_str
+            ):
+                bak_path = Path(backup_file_str)
+                if _is_safe_0600_regular_file(bak_path):
+                    _atomic_write_config_bytes(
+                        cfg_path,
+                        bak_path.read_bytes(),
+                        preserve_mode=orig_mode,
+                    )
+                    restored_exact_bytes = True
+
+            if not restored_exact_bytes:
+                serialized = (
+                    json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+                ).encode("utf-8")
+                _atomic_write_config_bytes(cfg_path, serialized, preserve_mode=orig_mode)
+
+            if isinstance(file_record, dict):
+                file_record["unwrapped"] = True
+            unwrapped_files.append(path_key)
 
     atomic_write_private_json(shim_headers_path, shim_headers)
     atomic_write_private_json(

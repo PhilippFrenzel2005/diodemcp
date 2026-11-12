@@ -85,12 +85,8 @@ def _restart_daemon_if_running(state_dir: Path) -> None:
         pass
 
 
-def require_interactive_tty(
-    *,
-    yes: bool = False,
-    action_description: str = "perform privileged action",
-) -> None:
-    """Enforce `C4` interactive human TTY requirement (`sys.stdin.isatty() and sys.stdout.isatty()`)."""
+def _ensure_interactive_tty() -> None:
+    """Verify both `sys.stdin` and `sys.stdout` are real interactive TTYs (`C4`)."""
     stdin_ok = bool(
         sys.stdin is not None
         and hasattr(sys.stdin, "isatty")
@@ -109,6 +105,16 @@ def require_interactive_tty(
         sys.stderr.flush()
         raise SystemExit(2)
 
+
+def require_interactive_tty(
+    *,
+    yes: bool = False,
+    action_description: str = "perform privileged action",
+    accepted_tokens: Sequence[str] = (),
+) -> None:
+    """Enforce `C4` interactive human TTY requirement (`sys.stdin.isatty() and sys.stdout.isatty()`)."""
+    _ensure_interactive_tty()
+
     if not yes:
         sys.stdout.write(
             f"Confirm DiodeMCP privileged action ({action_description})? [y/N]: "
@@ -120,7 +126,9 @@ def require_interactive_tty(
             sys.stderr.write("\nAborted.\n")
             sys.stderr.flush()
             raise SystemExit(2) from exc
-        if answer.strip().lower() not in ("y", "yes"):
+        normalized = answer.strip().lower()
+        allowed = {"y", "yes", *(tok.strip().lower() for tok in accepted_tokens if tok and tok.strip())}
+        if not normalized or normalized not in allowed:
             sys.stderr.write("Aborted by user.\n")
             sys.stderr.flush()
             raise SystemExit(2)
@@ -666,10 +674,7 @@ def _get_typer_app() -> Any:
         state_dir: Optional[Path] = typer.Option(None, "--state-dir"),
     ) -> None:
         """Grant a single-use, time-bounded approval for an exact blocked call (TTY-guarded per `C4`)."""
-        require_interactive_tty(
-            yes=yes,
-            action_description=f"approve single-use replay for incident {incident_id} (ttl={ttl}s)",
-        )
+        _ensure_interactive_tty()
 
         from diodemcp.engine import EngineClient
         from diodemcp.transport import (
@@ -683,6 +688,48 @@ def _get_typer_app() -> Any:
             cfg = default_transport(resolved_state)
             admin_secret = read_admin_secret(cfg)
             client = EngineClient(cfg)
+
+            matched_inc: dict[str, Any] | None = None
+            try:
+                incidents = client.list_incidents(
+                    limit=200,
+                    admin_secret=admin_secret,
+                )
+                for inc in incidents:
+                    if isinstance(inc, dict) and inc.get("incident_id") == incident_id:
+                        matched_inc = inc
+                        break
+            except (TransportError, ValueError, OSError):
+                matched_inc = None
+
+            if matched_inc is not None:
+                srv = matched_inc.get("server")
+                tl = matched_inc.get("tool")
+                band = matched_inc.get("band")
+                reason = matched_inc.get("reason")
+                typer.echo(
+                    f"Incident Summary\n"
+                    f"  incident_id={incident_id}\n"
+                    f"  server={srv}\n"
+                    f"  tool={tl}\n"
+                    f"  band={band}\n"
+                    f"  reason={reason}"
+                )
+                action_desc = (
+                    f"approve single-use replay for {srv}.{tl} "
+                    f"(incident {incident_id}, ttl={ttl}s)"
+                )
+            else:
+                typer.echo(f"Incident Summary\n  incident_id={incident_id}")
+                action_desc = f"approve single-use replay for incident {incident_id} (ttl={ttl}s)"
+
+            short_prefix = incident_id[:8] if len(incident_id) >= 8 else incident_id
+            require_interactive_tty(
+                yes=yes,
+                action_description=action_desc,
+                accepted_tokens=(incident_id, short_prefix),
+            )
+
             res = client.approve_incident(
                 incident_id,
                 ttl_seconds=ttl,
