@@ -682,6 +682,7 @@ def test_sql_mysql_executable_comments_outfile_and_returning_taint() -> None:
     for tricky_mutating_sql in (
         "SELECT 1 /*!50000 DROP TABLE customers */;",
         "SELECT 1 /*!DROP TABLE customers*/;",
+        "SELECT 1 /*M!100100 DROP TABLE customers */;",
         "SELECT * FROM users INTO OUTFILE '/var/lib/mysql-files/users.csv';",
         "SELECT 'payload' INTO DUMPFILE '/var/www/html/shell.php';",
     ):
@@ -885,3 +886,34 @@ def test_tokenizer_files_are_not_high_secret_and_github_gitlab_git_coverage() ->
         ("github", "create_pull_request_review"),
     ):
         assert CapabilityFlag.WRITES_EXTERNAL in reg.classify_request(srv, tl, {})
+
+
+@pytest.mark.parametrize(
+    "compound_or_value_cmd",
+    [
+        "git config -l && cp payload.sh /repo/.git/hooks/pre-commit",
+        "git config --get user.name; echo pwned >> ~/.bashrc",
+        "git config --get user.name && git config core.hooksPath /tmp/evil",
+        'git config core.sshCommand "bash -l"',
+        'git config alias.st "ls -l"',
+    ],
+)
+def test_git_config_readonly_does_not_suppress_compound_mutations_or_value_flags(
+    compound_or_value_cmd: str,
+) -> None:
+    reg = CapabilityRegistry.from_default_and_user_config()
+    flags = reg.classify_request("claude", "Bash", {"command": compound_or_value_cmd})
+    assert CapabilityFlag.MUTATES_SENSITIVE in flags, (
+        f"Expected MUTATES_SENSITIVE for: {compound_or_value_cmd}"
+    )
+
+    # Pure read-only git config variants still stay LOCAL_SAFE on request
+    for ro_cmd in (
+        "git config -l",
+        "git config --list",
+        "git config --global --get user.email",
+    ):
+        assert (
+            reg.classify_request("claude", "Bash", {"command": ro_cmd})
+            == CapabilityFlag.LOCAL_SAFE
+        )

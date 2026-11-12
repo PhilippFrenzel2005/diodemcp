@@ -231,8 +231,8 @@ _SELF_TAMPER_INLINE_RE = re.compile(
     re.IGNORECASE,
 )
 
-# T5: SQL comment stripping (preserving MySQL /*! ... */ executable comments) & DML/DDL detection.
-_SQL_BLOCK_COMMENT_RE = re.compile(r"/\*(?!!)[\s\S]*?\*/")
+# T5: SQL comment stripping (preserving MySQL/MariaDB /*!...*/ & /*M!...*/ comments) & DML/DDL detection.
+_SQL_BLOCK_COMMENT_RE = re.compile(r"/\*(?![Mm]?!)[\s\S]*?\*/")
 _MYSQL_EXEC_COMMENT_OPEN_RE = re.compile(r"/\*[Mm]?![0-9]{0,6}")
 _MYSQL_EXEC_COMMENT_CLOSE_RE = re.compile(r"\*/")
 _SQL_LINE_COMMENT_RE = re.compile(r"--[^\n]*")
@@ -283,8 +283,14 @@ _SHELL_DESTRUCTIVE_RE = re.compile(
     re.IGNORECASE,
 )
 
+_SHELL_SEGMENT_SPLIT_RE = re.compile(r"(?:\n|;|&&|\|\||\|(?!=)|(?<![<>])&(?![>&]))+")
+_GIT_CONFIG_PRE_FLAG_TOKEN = (
+    r"(?:(?:-f|--file|--blob)\s+(?:\"[^\"]*\"|'[^']*'|[^\s;|&-]+)"
+    r"|--?[A-Za-z][A-Za-z0-9-]*(?:=(?:\"[^\"]*\"|'[^']*'|[^\s;|&]+))?)"
+)
 _GIT_CONFIG_READONLY_RE = re.compile(
-    r"\bgit\s+config\b[^\n;|&]{0,120}\s(?:--get(?:-all|-regexp|-urlmatch)?|--list|-l)\b",
+    r"\bgit\s+config(?:\s+" + _GIT_CONFIG_PRE_FLAG_TOKEN + r"){0,6}"
+    r"\s+(?:--get(?:-all|-regexp|-urlmatch)?|--list|-l)\b",
     re.IGNORECASE,
 )
 _GIT_CONFIG_MUTATION_RE = re.compile(
@@ -312,7 +318,6 @@ _SHELL_WRITE_HINT_RE = re.compile(
     r"|\b(?:tee|cp|mv|install|ln|chmod|chown|touch|mkdir|truncate|dd|patch)\b"
     r"|\bsed\b[^\n;|&]{0,80}(?:\s-[A-Za-z]*i|\s--in-place)\b"
     r"|\b(?:perl|ruby)\b[^\n;|&]{0,80}\s-[A-Za-z]*i"
-    r"|\bgit\s+config\b"
     r"|\bopen\s*\("
     r"|\.(?:write_text|write_bytes)\s*\("
     r"|\b(?:writeFileSync|appendFileSync|copyFileSync)\s*\("
@@ -1090,20 +1095,18 @@ class CapabilityRegistry:
                     flags |= CapabilityFlag.WRITES_EXTERNAL
                 if _SHELL_DESTRUCTIVE_RE.search(cmd) is not None or _has_pipe_to_shell(cmd):
                     flags |= CapabilityFlag.MUTATES_SENSITIVE
-                if (
-                    _GIT_CONFIG_READONLY_RE.search(cmd) is None
-                    and _GIT_CONFIG_MUTATION_RE.search(cmd) is not None
-                ):
-                    flags |= CapabilityFlag.MUTATES_SENSITIVE
+                for seg in _SHELL_SEGMENT_SPLIT_RE.split(cmd):
+                    if (
+                        _GIT_CONFIG_MUTATION_RE.search(seg) is not None
+                        and _GIT_CONFIG_READONLY_RE.search(seg) is None
+                    ):
+                        flags |= CapabilityFlag.MUTATES_SENSITIVE
                 stripped_cmd_sql = _strip_sql_comments(cmd)
                 if re.search(
                     r"\b(?:psql|sqlite3|mysql)\b", cmd, re.IGNORECASE
                 ) and _SQL_MUTATION_RE.search(stripped_cmd_sql):
                     flags |= CapabilityFlag.MUTATES_SENSITIVE
-                if (
-                    _SHELL_WRITE_HINT_RE.search(cmd) is not None
-                    and _GIT_CONFIG_READONLY_RE.search(cmd) is None
-                ):
+                if _SHELL_WRITE_HINT_RE.search(cmd) is not None:
                     for folded_tok in self._canonical_folded_paths(
                         _extract_shell_path_candidates(cmd)
                     ):
