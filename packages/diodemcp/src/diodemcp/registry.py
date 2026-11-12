@@ -29,7 +29,10 @@ _PATH_ARG_KEYS: frozenset[str] = frozenset(
         "filepath",
         "notebook_path",
         "target_file",
+        "targetfile",
         "target_path",
+        "absolute_path",
+        "absolutepath",
         "source",
         "destination",
         "src",
@@ -59,13 +62,27 @@ _FILE_BODY_ARG_KEYS: frozenset[str] = frozenset(
     {
         "content",
         "contents",
+        "codecontent",
+        "replacementcontent",
+        "targetcontent",
+        "file_text",
         "new_string",
         "old_string",
         "new_str",
         "old_str",
+        "newtext",
+        "oldtext",
         "new_source",
         "diff",
         "patch",
+    }
+)
+
+_EDITOR_MULTIPLEX_TOOLS: frozenset[str] = frozenset(
+    {
+        "str_replace_editor",
+        "str_replace_based_edit_tool",
+        "text_editor",
     }
 )
 
@@ -74,13 +91,23 @@ _LOCAL_FILE_WRITE_TOOLS: frozenset[str] = frozenset(
         "write",
         "writefile",
         "write_file",
+        "write_to_file",
         "edit",
         "edit_file",
         "multiedit",
         "multi_edit",
+        "replace_file_content",
+        "multi_replace_file_content",
+        "replace_in_file",
+        "apply_diff",
+        "apply_patch",
+        "insert_content",
+        "insert_edit_into_file",
+        "create_new_file",
         "str_replace",
         "str_replace_editor",
         "str_replace_based_edit_tool",
+        "text_editor",
         "replace",
         "notebookedit",
         "notebook_edit",
@@ -104,6 +131,9 @@ _GENERIC_HOST_SERVERS: frozenset[str] = frozenset(
         "cursor",
         "agy",
         "antigravity",
+        "windsurf",
+        "cline",
+        "copilot",
         "vscode",
         "ide",
         "native",
@@ -114,17 +144,38 @@ _GENERIC_HOST_SERVERS: frozenset[str] = frozenset(
 )
 
 _SERVER_ALIASES: dict[str, str] = {
-    "brave-search": "brave_search",
+    "brave_search": "brave_search",
     "bravesearch": "brave_search",
-    "github-mcp": "github",
-    "gitlab-mcp": "gitlab",
-    "gworkspace-mcp": "gworkspace",
-    "google-workspace": "gworkspace",
+    "github_mcp": "github",
+    "gitlab_mcp": "gitlab",
+    "gworkspace_mcp": "gworkspace",
     "google_workspace": "gworkspace",
-    "google-drive": "gdrive",
+    "google_drive": "gdrive",
     "postgresql": "postgres",
     "sqlite3": "sqlite",
 }
+
+_KNOWN_DOMAIN_LIST_KEYS: frozenset[str] = frozenset(
+    {
+        "paths",
+        "high_secret_paths",
+        "servers",
+        "high_secret_servers",
+        "tools",
+        "high_secret_tools",
+    }
+)
+
+_USER_CONFIG_DOMAIN_SECTIONS: frozenset[str] = frozenset(
+    {
+        "private_sources",
+        "untrusted_sources",
+        "external_sinks",
+        "sensitive_mutations",
+        "mixed_trust_sources",
+        "dual_direction",
+    }
+)
 
 # T1: High-confidence secret headers and token prefixes for output_text promotion.
 _OUTPUT_SECRET_RE = re.compile(
@@ -146,9 +197,18 @@ _OUTPUT_SECRET_RE = re.compile(
 )
 
 # C4: CLI self-tamper and daemon termination patterns.
+_DIODEMCP_SUBCMDS = r"(?:allow|approve|unwrap|model|trust|shutdown)"
+_CLI_FLAG_TOKEN = (
+    r"--?[A-Za-z0-9][A-Za-z0-9_-]*"
+    r"(?:=(?:\"[^\"]*\"|'[^']*'|[^\s;|&]+)"
+    r"|\s+(?!" + _DIODEMCP_SUBCMDS + r"\b)(?:\"[^\"]*\"|'[^']*'|[^\s;|&-]+))?"
+)
 _SELF_TAMPER_CLI_RE = re.compile(
     r"(?:"
-    r"\bdiodemcp(?:\.(?:exe|mjs|py))?\s+(?:allow|unwrap|model)\b"
+    r"(?:\bpython[0-9.]*\s+-m\s+)?"
+    r"\bdiodemcp(?:\.(?:exe|mjs|py|cli))?(?:(?:@|==)[A-Za-z0-9._+-]+)?"
+    r"(?:\s+" + _CLI_FLAG_TOKEN + r"){0,6}"
+    r"\s+" + _DIODEMCP_SUBCMDS + r"\b"
     r"|\b(?:pkill|killall|pgrep|skill)\b[^\n;|&]{0,200}\bdiodemcp\b"
     r"|\btaskkill(?:\.exe)?\b[^\n;|&]{0,200}\bdiodemcp(?:\.exe)?\b"
     r")",
@@ -164,22 +224,27 @@ _SELF_TAMPER_INLINE_RE = re.compile(
     r"|\.claude\.json(?:[\"'\s;|&><=()]|$)"
     r"|\.claude(?:[/\\\"'\s;|&><=()]|$)"
     r"|\.mcp\.json(?:[\"'\s;|&><=()]|$)"
-    r"|\.cursor[/\\](?:mcp|hooks)\.json(?:[\"'\s;|&><=()]|$)"
+    r"|\.cursor(?:[/\\\"'\s;|&><=()]|$)"
     r"|\.vscode[/\\]mcp\.json(?:[\"'\s;|&><=()]|$)"
     r"|mcp_config\.json(?:[\"'\s;|&><=()]|$)"
     r")",
     re.IGNORECASE,
 )
 
-# T5: SQL comment stripping & mutating statement detection.
-_SQL_BLOCK_COMMENT_RE = re.compile(r"/\*[\s\S]*?\*/")
+# T5: SQL comment stripping (preserving MySQL /*! ... */ executable comments) & DML/DDL detection.
+_SQL_BLOCK_COMMENT_RE = re.compile(r"/\*(?!!)[\s\S]*?\*/")
+_MYSQL_EXEC_COMMENT_OPEN_RE = re.compile(r"/\*[Mm]?![0-9]{0,6}")
+_MYSQL_EXEC_COMMENT_CLOSE_RE = re.compile(r"\*/")
 _SQL_LINE_COMMENT_RE = re.compile(r"--[^\n]*")
 _SQL_MUTATION_RE = re.compile(
-    r"\b(?:DROP|DELETE|TRUNCATE|ALTER|UPDATE|INSERT|REPLACE|MERGE|GRANT|REVOKE|CREATE|COPY|CALL|EXEC|EXECUTE|ATTACH|DETACH)\b",
+    r"(?:"
+    r"\b(?:DROP|DELETE|TRUNCATE|ALTER|UPDATE|INSERT|REPLACE|MERGE|GRANT|REVOKE|CREATE|COPY|CALL|EXEC|EXECUTE|ATTACH|DETACH)\b"
+    r"|\bINTO\s+(?:OUTFILE|DUMPFILE)\b"
+    r")",
     re.IGNORECASE,
 )
 _SQL_READ_RE = re.compile(
-    r"\b(?:SELECT|WITH|SHOW|DESCRIBE|DESC|EXPLAIN|PRAGMA|VALUES)\b",
+    r"\b(?:SELECT|WITH|SHOW|DESCRIBE|DESC|EXPLAIN|PRAGMA|VALUES|RETURNING)\b",
     re.IGNORECASE,
 )
 
@@ -218,6 +283,23 @@ _SHELL_DESTRUCTIVE_RE = re.compile(
     re.IGNORECASE,
 )
 
+_GIT_CONFIG_READONLY_RE = re.compile(
+    r"\bgit\s+config\b[^\n;|&]{0,120}\s(?:--get(?:-all|-regexp|-urlmatch)?|--list|-l)\b",
+    re.IGNORECASE,
+)
+_GIT_CONFIG_MUTATION_RE = re.compile(
+    r"\bgit\s+config\b[^\n;|&]{0,160}(?:"
+    r"\s(?:--global|--system|-f|--file)\b"
+    r"|\b(?:core\.(?:hooksPath|sshCommand|fsmonitor|editor|pager)"
+    r"|alias\.[A-Za-z0-9_-]+"
+    r"|credential\.[A-Za-z0-9_.-]+"
+    r"|filter\.[A-Za-z0-9_.-]+"
+    r"|diff\.external"
+    r"|http\.extraHeader)\b"
+    r")",
+    re.IGNORECASE,
+)
+
 _PIPE_FETCH_STAGE_RE = re.compile(r"\b(?:curl|wget|base64)\b", re.IGNORECASE)
 _PIPE_EXEC_STAGE_RE = re.compile(
     r"^\s*(?:sudo\s+)?(?:env\s+)?(?:ba|z|da|k|fi)?sh\b|^\s*(?:sudo\s+)?(?:python3?|perl|ruby|node)\b",
@@ -225,42 +307,26 @@ _PIPE_EXEC_STAGE_RE = re.compile(
 )
 
 _SHELL_WRITE_HINT_RE = re.compile(
-    r"(?:>>?|\b(?:tee|cp|mv|install|ln|chmod|chown|touch|mkdir|truncate|dd)\b|\bsed\s+-i\b|\bperl\s+-i\b|\bopen\s*\()",
+    r"(?:"
+    r">>?"
+    r"|\b(?:tee|cp|mv|install|ln|chmod|chown|touch|mkdir|truncate|dd|patch)\b"
+    r"|\bsed\b[^\n;|&]{0,80}(?:\s-[A-Za-z]*i|\s--in-place)\b"
+    r"|\b(?:perl|ruby)\b[^\n;|&]{0,80}\s-[A-Za-z]*i"
+    r"|\bgit\s+config\b"
+    r"|\bopen\s*\("
+    r"|\.(?:write_text|write_bytes)\s*\("
+    r"|\b(?:writeFileSync|appendFileSync|copyFileSync)\s*\("
+    r"|\bshutil\.(?:copy\w*|move)\s*\("
+    r")",
     re.IGNORECASE,
 )
 
-_SHELL_TOKEN_SPLIT_RE = re.compile(r"[\s;|&><=()$`]+")
-
-
-def _resolve_posix_with_realpath(abs_posix_path: str) -> str:
-    """Resolve symlinks on deepest existing prefix while preserving lexical `..` fallback."""
-    current = re.sub(r"^/{2,}", "/", abs_posix_path)
-    for _ in range(4):
-        probe = current
-        tail_parts: list[str] = []
-        while probe and probe != "/" and not os.path.lexists(probe):
-            parent, leaf = posixpath.split(probe)
-            if parent == probe:
-                break
-            if leaf:
-                tail_parts.append(leaf)
-            probe = parent
-
-        if probe and os.path.lexists(probe):
-            real_base = os.path.realpath(probe).replace("\\", "/")
-        else:
-            real_base = probe or "/"
-
-        combined = (
-            posixpath.join(real_base, *reversed(tail_parts)) if tail_parts else real_base
-        )
-        normalized = posixpath.normpath(combined)
-        if normalized.startswith("//"):
-            normalized = "/" + normalized.lstrip("/")
-        if normalized == current:
-            break
-        current = normalized
-    return current
+_SHELL_HOME_ENV_RE = re.compile(
+    r"(?:\$\{(?:HOME|USERPROFILE)\}|\$(?:HOME|USERPROFILE)(?![A-Za-z0-9_])|%USERPROFILE%)",
+    re.IGNORECASE,
+)
+_QUOTED_SPAN_RE = re.compile(r"""["']([^"'\n]{1,512})["']""")
+_SHELL_TOKEN_SPLIT_RE = re.compile(r"[\s;|&><=()$`',\"]+")
 
 
 def _normalize_slashed_prefix(raw_path: str) -> str:
@@ -293,10 +359,73 @@ def _normalize_slashed_prefix(raw_path: str) -> str:
             if m_ext_gen:
                 slashed = m_ext_gen.group(1)
 
-    if slashed == "~" or slashed.startswith("~/") or slashed.startswith("~"):
+    if slashed.startswith("~"):
         slashed = os.path.expanduser(slashed).replace("\\", "/")
 
     return slashed
+
+
+def _lexical_norm_rooted(slashed: str) -> str:
+    """Lexically normalize `..` and `.` while preserving UNC, Windows drive, or POSIX root."""
+    m_unc = _UNC_ROOT_RE.match(slashed)
+    if m_unc:
+        unc_root = m_unc.group(1)
+        unc_rest = posixpath.normpath(m_unc.group(2) or "/")
+        return unc_root if unc_rest == "/" else f"{unc_root}{unc_rest}"
+
+    m_drive = _DRIVE_ROOT_RE.match(slashed)
+    if m_drive:
+        drive = m_drive.group(1)
+        drive_rest = posixpath.normpath(m_drive.group(2) or "/")
+        return f"{drive}/" if drive_rest == "/" else f"{drive}{drive_rest}"
+
+    if slashed.startswith("/"):
+        collapsed = re.sub(r"^/{2,}", "/", slashed)
+        norm = posixpath.normpath(collapsed)
+        if norm.startswith("//"):
+            norm = "/" + norm.lstrip("/")
+        return norm
+
+    return posixpath.normpath(slashed)
+
+
+def _resolve_with_existing_ancestor(slashed_path: str, root_floor: str) -> str:
+    """Resolve symlinks/junctions on deepest existing prefix while preserving lexical `..` fallback."""
+    current = (
+        re.sub(r"^/{2,}", "/", slashed_path)
+        if root_floor == "/"
+        else slashed_path
+    )
+    floor_cmp = root_floor.rstrip("/").casefold()
+
+    for _ in range(4):
+        probe = current
+        tail_parts: list[str] = []
+        while (
+            probe
+            and probe.rstrip("/").casefold() != floor_cmp
+            and not os.path.lexists(probe)
+        ):
+            parent, leaf = posixpath.split(probe)
+            if parent == probe:
+                break
+            if leaf:
+                tail_parts.append(leaf)
+            probe = parent
+
+        if probe and os.path.lexists(probe):
+            real_base = _normalize_slashed_prefix(os.path.realpath(probe))
+        else:
+            real_base = probe or root_floor
+
+        combined = (
+            posixpath.join(real_base, *reversed(tail_parts)) if tail_parts else real_base
+        )
+        normalized = _lexical_norm_rooted(combined)
+        if normalized == current:
+            break
+        current = normalized
+    return current
 
 
 def _lexical_normalize_target_path(
@@ -310,25 +439,12 @@ def _lexical_normalize_target_path(
     if not slashed:
         return ""
 
-    m_unc = _UNC_ROOT_RE.match(slashed)
-    if m_unc:
-        unc_root = m_unc.group(1)
-        unc_rest = posixpath.normpath(m_unc.group(2) or "/")
-        result = unc_root if unc_rest == "/" else f"{unc_root}{unc_rest}"
-        return result.casefold() if casefold else result
-
-    m_drive = _DRIVE_ROOT_RE.match(slashed)
-    if m_drive:
-        drive = m_drive.group(1)
-        drive_rest = posixpath.normpath(m_drive.group(2) or "/")
-        result = f"{drive}/" if drive_rest == "/" else f"{drive}{drive_rest}"
-        return result.casefold() if casefold else result
-
-    if slashed.startswith("/"):
-        collapsed = re.sub(r"^/{2,}", "/", slashed)
-        result = posixpath.normpath(collapsed)
-        if result.startswith("//"):
-            result = "/" + result.lstrip("/")
+    if (
+        _UNC_ROOT_RE.match(slashed)
+        or _DRIVE_ROOT_RE.match(slashed)
+        or slashed.startswith("/")
+    ):
+        result = _lexical_norm_rooted(slashed)
         return result.casefold() if casefold else result
 
     if workspace_root is not None:
@@ -353,20 +469,22 @@ def canonicalize_target_path(
 
     m_unc = _UNC_ROOT_RE.match(slashed)
     if m_unc:
-        unc_root = m_unc.group(1)
-        unc_rest = posixpath.normpath(m_unc.group(2) or "/")
-        result = unc_root if unc_rest == "/" else f"{unc_root}{unc_rest}"
+        if os.name == "nt":
+            result = _resolve_with_existing_ancestor(slashed, m_unc.group(1))
+        else:
+            result = _lexical_norm_rooted(slashed)
         return result.casefold() if casefold else result
 
     m_drive = _DRIVE_ROOT_RE.match(slashed)
     if m_drive:
-        drive = m_drive.group(1)
-        drive_rest = posixpath.normpath(m_drive.group(2) or "/")
-        result = f"{drive}/" if drive_rest == "/" else f"{drive}{drive_rest}"
+        if os.name == "nt":
+            result = _resolve_with_existing_ancestor(slashed, f"{m_drive.group(1)}/")
+        else:
+            result = _lexical_norm_rooted(slashed)
         return result.casefold() if casefold else result
 
     if slashed.startswith("/"):
-        result = _resolve_posix_with_realpath(slashed)
+        result = _resolve_with_existing_ancestor(slashed, "/")
         return result.casefold() if casefold else result
 
     if workspace_root is not None:
@@ -467,9 +585,14 @@ def _normalize_server_and_tool(server: str, tool: str) -> tuple[str, str]:
             srv = prefix
             tl = suffix
 
-    srv = _SERVER_ALIASES.get(srv, srv.replace("-", "_"))
-    srv = _SERVER_ALIASES.get(srv, srv)
+    srv_underscored = srv.replace("-", "_")
+    srv = _SERVER_ALIASES.get(srv_underscored, srv_underscored)
     return srv, tl
+
+
+def _expand_shell_env_vars(text: str) -> str:
+    home_posix = Path.home().as_posix()
+    return _SHELL_HOME_ENV_RE.sub(lambda _m: home_posix, text)
 
 
 def _collect_strings_for_self_tamper(
@@ -502,8 +625,10 @@ def _extract_path_values(args: dict[str, Any]) -> list[str]:
     found: list[str] = []
 
     def _visit_path_val(val: Any) -> None:
-        if isinstance(val, str) and val.strip():
-            found.append(val.strip())
+        if isinstance(val, str):
+            stripped = val.strip()
+            if stripped and not stripped.lower().startswith(("http://", "https://")):
+                found.append(stripped)
         elif isinstance(val, (list, tuple, set)):
             for elem in val:
                 _visit_path_val(elem)
@@ -541,19 +666,31 @@ def _extract_keyed_strings(args: dict[str, Any], target_keys: frozenset[str]) ->
 
 
 def _extract_shell_path_candidates(command: str) -> list[str]:
+    expanded = _expand_shell_env_vars(command)
     candidates: list[str] = []
-    for raw_tok in _SHELL_TOKEN_SPLIT_RE.split(command):
+    seen: set[str] = set()
+
+    def _consider(raw_tok: str) -> None:
         tok = raw_tok.strip().strip("\"'")
         if not tok or tok.startswith("-") or "://" in tok:
-            continue
+            return
         if "/" in tok or "\\" in tok or tok.startswith("~") or "." in tok:
-            candidates.append(tok)
+            if tok not in seen:
+                seen.add(tok)
+                candidates.append(tok)
+
+    for m in _QUOTED_SPAN_RE.finditer(expanded):
+        _consider(m.group(1))
+    for raw_tok in _SHELL_TOKEN_SPLIT_RE.split(expanded):
+        _consider(raw_tok)
     return candidates
 
 
 def _strip_sql_comments(sql: str) -> str:
     without_block = _SQL_BLOCK_COMMENT_RE.sub(" ", sql)
-    return _SQL_LINE_COMMENT_RE.sub(" ", without_block)
+    unwrapped_exec = _MYSQL_EXEC_COMMENT_OPEN_RE.sub(" ", without_block)
+    unwrapped_exec = _MYSQL_EXEC_COMMENT_CLOSE_RE.sub(" ", unwrapped_exec)
+    return _SQL_LINE_COMMENT_RE.sub(" ", unwrapped_exec)
 
 
 def _has_pipe_to_shell(command: str) -> bool:
@@ -569,6 +706,17 @@ def _has_pipe_to_shell(command: str) -> bool:
     return False
 
 
+def _validate_string_list(section: dict[str, Any], key: str, section_name: str) -> list[str]:
+    if key not in section:
+        return []
+    val = section[key]
+    if not isinstance(val, list) or not all(isinstance(item, str) for item in val):
+        raise ValueError(
+            f"[{section_name}].{key} must be a list of strings, got {type(val).__name__}"
+        )
+    return val
+
+
 @dataclass
 class _DomainMatcher:
     path_patterns: list[re.Pattern[str]] = field(default_factory=list)
@@ -580,30 +728,44 @@ class _DomainMatcher:
     high_secret_qualified_tools: set[str] = field(default_factory=set)
     high_secret_standalone_tools: set[str] = field(default_factory=set)
 
-    def extend_from_mapping(self, section: dict[str, Any]) -> None:
-        for pat in section.get("paths", []):
-            if isinstance(pat, str) and pat.strip():
+    def extend_from_mapping(
+        self,
+        section: Any,
+        *,
+        section_name: str = "config",
+    ) -> None:
+        if not isinstance(section, dict):
+            raise ValueError(
+                f"[{section_name}] must be a TOML table/dict, got {type(section).__name__}"
+            )
+        unknown_keys = set(section.keys()) - _KNOWN_DOMAIN_LIST_KEYS
+        if unknown_keys:
+            sorted_unknown = ", ".join(sorted(str(k) for k in unknown_keys))
+            raise ValueError(f"Unknown keys in [{section_name}]: {sorted_unknown}")
+
+        for pat in _validate_string_list(section, "paths", section_name):
+            if pat.strip():
                 self.path_patterns.extend(_compile_path_globs(pat))
-        for pat in section.get("high_secret_paths", []):
-            if isinstance(pat, str) and pat.strip():
+        for pat in _validate_string_list(section, "high_secret_paths", section_name):
+            if pat.strip():
                 self.high_secret_path_patterns.extend(_compile_path_globs(pat))
-        for srv in section.get("servers", []):
-            if isinstance(srv, str) and srv.strip():
+        for srv in _validate_string_list(section, "servers", section_name):
+            if srv.strip():
                 norm_srv, _ = _normalize_server_and_tool(srv, "")
                 self.servers.add(norm_srv)
-        for srv in section.get("high_secret_servers", []):
-            if isinstance(srv, str) and srv.strip():
+        for srv in _validate_string_list(section, "high_secret_servers", section_name):
+            if srv.strip():
                 norm_srv, _ = _normalize_server_and_tool(srv, "")
                 self.high_secret_servers.add(norm_srv)
-        for tl in section.get("tools", []):
-            if isinstance(tl, str) and tl.strip():
+        for tl in _validate_string_list(section, "tools", section_name):
+            if tl.strip():
                 if "." in tl:
                     norm_srv, norm_tl = _normalize_server_and_tool("", tl)
                     self.qualified_tools.add(f"{norm_srv}.{norm_tl}")
                 else:
                     self.standalone_tools.add(tl.strip().lower())
-        for tl in section.get("high_secret_tools", []):
-            if isinstance(tl, str) and tl.strip():
+        for tl in _validate_string_list(section, "high_secret_tools", section_name):
+            if tl.strip():
                 if "." in tl:
                     norm_srv, norm_tl = _normalize_server_and_tool("", tl)
                     self.high_secret_qualified_tools.add(f"{norm_srv}.{norm_tl}")
@@ -633,6 +795,15 @@ class _DomainMatcher:
         )
 
 
+def _is_editor_view_mode(norm_tool: str, args: dict[str, Any] | None) -> bool:
+    if norm_tool not in _EDITOR_MULTIPLEX_TOOLS or not isinstance(args, dict):
+        return False
+    for key, val in args.items():
+        if key.lower() == "command" and isinstance(val, str):
+            return val.strip().lower() == "view"
+    return False
+
+
 class CapabilityRegistry:
     """Strict-Everywhere bitflag capability classifier across T1-T7 threat surfaces."""
 
@@ -652,6 +823,7 @@ class CapabilityRegistry:
         db_mutating_tools: set[str],
         shell_tools: set[str],
         user_private_sources: _DomainMatcher,
+        user_sensitive_mutations: _DomainMatcher,
     ) -> None:
         self.workspace_root = workspace_root
         self._self_protection = self_protection
@@ -666,6 +838,7 @@ class CapabilityRegistry:
         self._db_mutating_tools = db_mutating_tools
         self._shell_tools = shell_tools
         self._user_private_sources = user_private_sources
+        self._user_sensitive_mutations = user_sensitive_mutations
 
     @classmethod
     def from_default_and_user_config(
@@ -689,14 +862,29 @@ class CapabilityRegistry:
         external_sinks = _DomainMatcher()
         sensitive_mutations = _DomainMatcher()
         user_private_sources = _DomainMatcher()
+        user_sensitive_mutations = _DomainMatcher()
 
-        self_protection.extend_from_mapping(default_data.get("self_protection", {}))
-        private_sources.extend_from_mapping(default_data.get("private_sources", {}))
-        untrusted_sources.extend_from_mapping(default_data.get("untrusted_sources", {}))
-        mixed_trust_sources.extend_from_mapping(default_data.get("mixed_trust_sources", {}))
-        dual_direction.extend_from_mapping(default_data.get("dual_direction", {}))
-        external_sinks.extend_from_mapping(default_data.get("external_sinks", {}))
-        sensitive_mutations.extend_from_mapping(default_data.get("sensitive_mutations", {}))
+        self_protection.extend_from_mapping(
+            default_data.get("self_protection", {}), section_name="self_protection"
+        )
+        private_sources.extend_from_mapping(
+            default_data.get("private_sources", {}), section_name="private_sources"
+        )
+        untrusted_sources.extend_from_mapping(
+            default_data.get("untrusted_sources", {}), section_name="untrusted_sources"
+        )
+        mixed_trust_sources.extend_from_mapping(
+            default_data.get("mixed_trust_sources", {}), section_name="mixed_trust_sources"
+        )
+        dual_direction.extend_from_mapping(
+            default_data.get("dual_direction", {}), section_name="dual_direction"
+        )
+        external_sinks.extend_from_mapping(
+            default_data.get("external_sinks", {}), section_name="external_sinks"
+        )
+        sensitive_mutations.extend_from_mapping(
+            default_data.get("sensitive_mutations", {}), section_name="sensitive_mutations"
+        )
 
         db_section = default_data.get("database", {})
         db_servers = {
@@ -725,15 +913,43 @@ class CapabilityRegistry:
         )
         if resolved_config.is_file():
             user_data = tomllib.loads(resolved_config.read_text(encoding="utf-8"))
-            if isinstance(user_data.get("private_sources"), dict):
-                private_sources.extend_from_mapping(user_data["private_sources"])
-                user_private_sources.extend_from_mapping(user_data["private_sources"])
-            if isinstance(user_data.get("untrusted_sources"), dict):
-                untrusted_sources.extend_from_mapping(user_data["untrusted_sources"])
-            if isinstance(user_data.get("external_sinks"), dict):
-                external_sinks.extend_from_mapping(user_data["external_sinks"])
-            if isinstance(user_data.get("sensitive_mutations"), dict):
-                sensitive_mutations.extend_from_mapping(user_data["sensitive_mutations"])
+            for key in user_data:
+                if key in _USER_CONFIG_DOMAIN_SECTIONS and not isinstance(
+                    user_data[key], dict
+                ):
+                    raise ValueError(
+                        f"[{key}] in {resolved_config} must be a TOML table/dict"
+                    )
+            if "private_sources" in user_data:
+                private_sources.extend_from_mapping(
+                    user_data["private_sources"], section_name="private_sources"
+                )
+                user_private_sources.extend_from_mapping(
+                    user_data["private_sources"], section_name="private_sources"
+                )
+            if "untrusted_sources" in user_data:
+                untrusted_sources.extend_from_mapping(
+                    user_data["untrusted_sources"], section_name="untrusted_sources"
+                )
+            if "external_sinks" in user_data:
+                external_sinks.extend_from_mapping(
+                    user_data["external_sinks"], section_name="external_sinks"
+                )
+            if "sensitive_mutations" in user_data:
+                sensitive_mutations.extend_from_mapping(
+                    user_data["sensitive_mutations"], section_name="sensitive_mutations"
+                )
+                user_sensitive_mutations.extend_from_mapping(
+                    user_data["sensitive_mutations"], section_name="sensitive_mutations"
+                )
+            if "mixed_trust_sources" in user_data:
+                mixed_trust_sources.extend_from_mapping(
+                    user_data["mixed_trust_sources"], section_name="mixed_trust_sources"
+                )
+            if "dual_direction" in user_data:
+                dual_direction.extend_from_mapping(
+                    user_data["dual_direction"], section_name="dual_direction"
+                )
 
         return cls(
             workspace_root=workspace_root,
@@ -749,6 +965,7 @@ class CapabilityRegistry:
             db_mutating_tools=db_mutating_tools,
             shell_tools=shell_tools,
             user_private_sources=user_private_sources,
+            user_sensitive_mutations=user_sensitive_mutations,
         )
 
     def _canonical_folded_paths(self, raw_paths: list[str]) -> list[str]:
@@ -769,14 +986,28 @@ class CapabilityRegistry:
     def _is_shell_call(self, norm_server: str, norm_tool: str) -> bool:
         return norm_tool in self._shell_tools or norm_server in {"bash", "shell", "terminal"}
 
-    def _is_file_read_call(self, norm_server: str, norm_tool: str) -> bool:
+    def _is_file_read_call(
+        self,
+        norm_server: str,
+        norm_tool: str,
+        args: dict[str, Any] | None = None,
+    ) -> bool:
+        if _is_editor_view_mode(norm_tool, args):
+            return True
         if norm_tool in _LOCAL_FILE_WRITE_TOOLS:
             return False
         if norm_tool in self._private_sources.standalone_tools:
             return True
         return norm_server in {"filesystem", "files"} and norm_tool not in _LOCAL_FILE_WRITE_TOOLS
 
-    def _is_file_write_call(self, norm_server: str, norm_tool: str) -> bool:
+    def _is_file_write_call(
+        self,
+        norm_server: str,
+        norm_tool: str,
+        args: dict[str, Any] | None = None,
+    ) -> bool:
+        if _is_editor_view_mode(norm_tool, args):
+            return False
         return norm_tool in _LOCAL_FILE_WRITE_TOOLS
 
     def is_unconditional_critical_self_tamper(
@@ -796,10 +1027,11 @@ class CapabilityRegistry:
         _collect_strings_for_self_tamper(
             args,
             all_strings,
-            skip_file_body_keys=self._is_file_write_call(norm_server, norm_tool),
+            skip_file_body_keys=self._is_file_write_call(norm_server, norm_tool, args),
         )
         for text in all_strings:
-            for candidate in (text, urllib.parse.unquote(text)):
+            expanded = _expand_shell_env_vars(text)
+            for candidate in (text, expanded, urllib.parse.unquote(expanded)):
                 if _SELF_TAMPER_CLI_RE.search(candidate) is not None:
                     return True
                 for line in candidate.splitlines():
@@ -858,12 +1090,20 @@ class CapabilityRegistry:
                     flags |= CapabilityFlag.WRITES_EXTERNAL
                 if _SHELL_DESTRUCTIVE_RE.search(cmd) is not None or _has_pipe_to_shell(cmd):
                     flags |= CapabilityFlag.MUTATES_SENSITIVE
+                if (
+                    _GIT_CONFIG_READONLY_RE.search(cmd) is None
+                    and _GIT_CONFIG_MUTATION_RE.search(cmd) is not None
+                ):
+                    flags |= CapabilityFlag.MUTATES_SENSITIVE
                 stripped_cmd_sql = _strip_sql_comments(cmd)
                 if re.search(
                     r"\b(?:psql|sqlite3|mysql)\b", cmd, re.IGNORECASE
                 ) and _SQL_MUTATION_RE.search(stripped_cmd_sql):
                     flags |= CapabilityFlag.MUTATES_SENSITIVE
-                if _SHELL_WRITE_HINT_RE.search(cmd) is not None:
+                if (
+                    _SHELL_WRITE_HINT_RE.search(cmd) is not None
+                    and _GIT_CONFIG_READONLY_RE.search(cmd) is None
+                ):
                     for folded_tok in self._canonical_folded_paths(
                         _extract_shell_path_candidates(cmd)
                     ):
@@ -873,8 +1113,9 @@ class CapabilityRegistry:
                             flags |= CapabilityFlag.WRITES_EXTERNAL
 
         # T6 / T7: Local file write/edit calls inspect target paths for sensitive mutations & external sinks.
-        if self._is_file_write_call(norm_server, norm_tool) or (
-            norm_server in {"filesystem", "files"} and not self._is_file_read_call(norm_server, norm_tool)
+        is_file_read = self._is_file_read_call(norm_server, norm_tool, args)
+        if self._is_file_write_call(norm_server, norm_tool, args) or (
+            norm_server in {"filesystem", "files"} and not is_file_read
         ):
             for fp in folded_paths:
                 if self._sensitive_mutations.matches_path(fp):
@@ -882,10 +1123,12 @@ class CapabilityRegistry:
                 if self._external_sinks.matches_path(fp):
                     flags |= CapabilityFlag.WRITES_EXTERNAL
         else:
-            # User-configured external sink / sensitive mutation paths still apply to custom write tools.
+            # User-configured external sink / sensitive mutation paths apply to custom non-read tools.
             for fp in folded_paths:
                 if self._external_sinks.matches_path(fp):
                     flags |= CapabilityFlag.WRITES_EXTERNAL
+                if not is_file_read and self._user_sensitive_mutations.matches_path(fp):
+                    flags |= CapabilityFlag.MUTATES_SENSITIVE
 
         return flags
 
@@ -926,7 +1169,7 @@ class CapabilityRegistry:
         ):
             flags |= CapabilityFlag.READS_PRIVATE | CapabilityFlag.READS_UNTRUSTED
 
-        # T3: Database SELECT / read queries ingest private data on response.
+        # T3: Database SELECT / RETURNING / read queries ingest private data on response.
         if norm_server in self._db_servers:
             sql_list = _extract_keyed_strings(args, _SQL_ARG_KEYS)
             if sql_list:
@@ -941,14 +1184,14 @@ class CapabilityRegistry:
                 flags |= CapabilityFlag.READS_PRIVATE
 
         # T1 / T2 / Opus I1: Local & workspace file reads (Strict Everywhere: all file reads -> READS_PRIVATE).
-        if self._is_file_read_call(norm_server, norm_tool):
+        if self._is_file_read_call(norm_server, norm_tool, args):
             flags |= CapabilityFlag.READS_PRIVATE
             for fp in folded_paths:
                 if self._private_sources.matches_high_secret_path(fp):
                     flags |= CapabilityFlag.READS_PRIVATE | CapabilityFlag.HIGH_SECRET
                 if self._untrusted_sources.matches_path(fp):
                     flags |= CapabilityFlag.READS_UNTRUSTED
-        elif not self._is_file_write_call(norm_server, norm_tool):
+        elif not self._is_file_write_call(norm_server, norm_tool, args):
             # Non-file-write tools: apply server/tool rules and user-configured path rules (T7).
             if not is_outbound_sink_tool:
                 if self._private_sources.matches_server_or_tool(norm_server, norm_tool):
@@ -967,6 +1210,8 @@ class CapabilityRegistry:
                     flags |= CapabilityFlag.READS_PRIVATE | CapabilityFlag.HIGH_SECRET
                 if self._untrusted_sources.matches_path(fp):
                     flags |= CapabilityFlag.READS_UNTRUSTED
+                if self._mixed_trust_sources.matches_path(fp):
+                    flags |= CapabilityFlag.READS_PRIVATE | CapabilityFlag.READS_UNTRUSTED
 
         # T1: Dynamic output_text secret header / prefix inspection upgrades any tool response.
         if output_text and _OUTPUT_SECRET_RE.search(output_text) is not None:
