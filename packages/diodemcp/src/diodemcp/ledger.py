@@ -37,6 +37,8 @@ _LONG_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{23,}")
 _PRINTABLE_RUN_RE = re.compile(r"[^\x00-\x08\x0b\x0c\x0e-\x1f\x7f]{8,}")
 _SHELL_TOKEN_SPLIT_RE = re.compile(r"""[\s;|&><()"'`=]+""")
 _EMBEDDED_URL_OR_QUERY_RE = re.compile(r"""(?:https?://[^\s"'<>]+|\?[^\s"'<>]+)""", re.IGNORECASE)
+_WIN_DRIVE_ROOT_FOLD_RE = re.compile(r"^[a-z]:$")
+_UNC_SHARE_ROOT_FOLD_RE = re.compile(r"^//[^/]+(?:/[^/]+)?$")
 _REPO_WIDE_PUBLISH_CMD_RE = re.compile(
     r"(?:"
     r"\bgit\s+(?:push|send-email|bundle)\b"
@@ -369,7 +371,7 @@ class SessionLedger:
         self._outbound_history: dict[str, list[dict[str, str]]] = {}
         self._span_counter: int = 0
 
-        if self._persist_path is not None and self._persist_path.is_file():
+        if self._persist_path is not None and self._persist_path.exists():
             self._rehydrate_from_disk(self._persist_path)
 
     @property
@@ -393,12 +395,52 @@ class SessionLedger:
         try:
             raw_bytes = path.read_bytes()
             if not raw_bytes:
-                return
+                raise ValueError("Empty ledger file")
             data = json.loads(raw_bytes.decode("utf-8"))
             if not isinstance(data, dict):
                 raise ValueError("Ledger JSON root is not an object")
 
             raw_intent = data.get("intent")
+            if raw_intent is not None and not isinstance(raw_intent, str):
+                raise ValueError("Ledger 'intent' field must be a string or null")
+
+            raw_priv = data.get("private_spans", [])
+            raw_untrust = data.get("untrusted_spans", [])
+            raw_tp = data.get("tainted_paths", {})
+            raw_out = data.get("outbound_history", {})
+
+            if not isinstance(raw_priv, list) or not isinstance(raw_untrust, list):
+                raise ValueError("Ledger span collections must be lists")
+            if not isinstance(raw_tp, dict) or not isinstance(raw_out, dict):
+                raise ValueError("Ledger path/outbound maps must be objects")
+
+            parsed_priv = [TaintSpan.model_validate(item) for item in raw_priv]
+            parsed_untrust = [TaintSpan.model_validate(item) for item in raw_untrust]
+
+            parsed_tp: dict[str, set[str]] = {}
+            for k, vals in raw_tp.items():
+                if not isinstance(vals, list) or not all(isinstance(v, str) for v in vals):
+                    raise ValueError("Ledger 'tainted_paths' values must be list[str]")
+                parsed_tp[str(k)] = {v for v in vals}
+
+            parsed_out: dict[str, list[dict[str, str]]] = {}
+            for dest, entries in raw_out.items():
+                if not isinstance(entries, list):
+                    raise ValueError("Ledger 'outbound_history' values must be lists")
+                bounded_entries: list[dict[str, str]] = []
+                for entry in entries[-MAX_OUTBOUND_CALLS_PER_DEST:]:
+                    if not isinstance(entry, dict) or not all(
+                        isinstance(av, str) for av in entry.values()
+                    ):
+                        raise ValueError("Ledger 'outbound_history' entry must be dict[str, str]")
+                    bounded_entries.append({str(ak): av for ak, av in entry.items()})
+                parsed_out[str(dest)] = bounded_entries
+
+            default_counter = len(parsed_priv) + len(parsed_untrust)
+            raw_counter = data.get("span_counter", default_counter)
+            if isinstance(raw_counter, bool) or not isinstance(raw_counter, int):
+                raise ValueError("Ledger 'span_counter' must be an integer")
+
             self._intent = (
                 raw_intent.strip()
                 if isinstance(raw_intent, str)
@@ -406,33 +448,17 @@ class SessionLedger:
                 and raw_intent.strip() != "<|missing_intent|>"
                 else None
             )
-            self._private_spans = [
-                TaintSpan.model_validate(item) for item in data.get("private_spans", [])
-            ]
-            self._untrusted_spans = [
-                TaintSpan.model_validate(item) for item in data.get("untrusted_spans", [])
-            ]
-            raw_tp = data.get("tainted_paths", {})
-            if isinstance(raw_tp, dict):
-                self._tainted_paths = {
-                    str(k): {str(v) for v in vals}
-                    for k, vals in raw_tp.items()
-                    if isinstance(vals, list)
-                }
-            raw_out = data.get("outbound_history", {})
-            if isinstance(raw_out, dict):
-                self._outbound_history = {
-                    str(dest): [
-                        {str(ak): str(av) for ak, av in entry.items()}
-                        for entry in entries[-MAX_OUTBOUND_CALLS_PER_DEST:]
-                        if isinstance(entry, dict)
-                    ]
-                    for dest, entries in raw_out.items()
-                    if isinstance(entries, list)
-                }
-            self._span_counter = int(data.get("span_counter", len(self._private_spans) + len(self._untrusted_spans)))
+            self._private_spans = parsed_priv
+            self._untrusted_spans = parsed_untrust
+            self._tainted_paths = parsed_tp
+            self._outbound_history = parsed_out
+            self._span_counter = raw_counter
         except Exception:
             # Fail-closed (C5): corrupt persisted session file must never revert to empty fast-path
+            self._intent = None
+            self._untrusted_spans = []
+            self._tainted_paths = {}
+            self._outbound_history = {}
             sentinel = TaintSpan(
                 span_id=self._next_span_id(),
                 source_label="corrupt_ledger_fail_closed",
@@ -702,6 +728,26 @@ class SessionLedger:
         self._persist_if_configured()
         return synth_span.model_copy(deep=True)
 
+    def _is_strict_workspace_subdir(self, canon_fold: str) -> bool:
+        if self._workspace_root is None:
+            return False
+        canon_stripped = canon_fold.rstrip("/")
+        if (
+            not canon_stripped
+            or _WIN_DRIVE_ROOT_FOLD_RE.match(canon_stripped) is not None
+            or _UNC_SHARE_ROOT_FOLD_RE.match(canon_stripped) is not None
+        ):
+            return False
+        ws_canon = canonicalize_target_path(os.fspath(self._workspace_root), None)
+        ws_stripped = ws_canon.casefold().rstrip("/")
+        if (
+            not ws_stripped
+            or _WIN_DRIVE_ROOT_FOLD_RE.match(ws_stripped) is not None
+            or _UNC_SHARE_ROOT_FOLD_RE.match(ws_stripped) is not None
+        ):
+            return False
+        return canon_stripped != ws_stripped and canon_stripped.startswith(f"{ws_stripped}/")
+
     def _matches_any_tainted_path(self, raw_candidate: str) -> bool:
         cleaned = raw_candidate.strip().lstrip("@")
         if not cleaned or cleaned.startswith(("http://", "https://")):
@@ -710,9 +756,13 @@ class SessionLedger:
         if not canon:
             return False
         canon_fold = canon.casefold()
+        allow_dir_prefix = self._is_strict_workspace_subdir(canon_fold)
+        dir_prefix = f"{canon_fold.rstrip('/')}/" if allow_dir_prefix else ""
         for tp in self._tainted_paths:
             tp_fold = tp.casefold()
-            if canon_fold == tp_fold or tp_fold.startswith(f"{canon_fold.rstrip('/')}/"):
+            if canon_fold == tp_fold:
+                return True
+            if allow_dir_prefix and tp_fold.startswith(dir_prefix):
                 return True
         return False
 
@@ -743,6 +793,8 @@ class SessionLedger:
             for tok in _SHELL_TOKEN_SPLIT_RE.split(val):
                 tok_clean = tok.strip().lstrip("@")
                 if not tok_clean or tok_clean.startswith("-"):
+                    continue
+                if set(tok_clean) <= {".", "/", "\\"}:
                     continue
                 if "/" in tok_clean or "\\" in tok_clean or "." in tok_clean:
                     if self._matches_any_tainted_path(tok_clean):

@@ -347,19 +347,16 @@ class JevWindowPacker:
             chosen.sort(key=lambda item: item[0])
             return chosen, truncated
 
-        # Budget exceeded: prevent any single giant span from starving pinned or high-overlap peers
+        # Budget exceeded: give pinned HIGH_SECRET spans their full pinned share while capping unpinned spans
         truncated = True
         pinned_count = sum(1 for _, _, pin, _ in encoded_candidates if pin)
-        desired_slots = min(
-            len(encoded_candidates),
-            max(pinned_count, min(8, max(1, token_budget // 8))),
-        )
-        soft_per_span_cap = max(1, (token_budget // max(1, desired_slots)) - 1)
+        pinned_per_span_cap = max(1, (token_budget // max(1, pinned_count)) - 1)
+        unpinned_per_span_cap: int | None = None
 
         selected: list[tuple[int, TaintSpan, list[int]]] = []
         remaining = token_budget
 
-        for idx, (orig_idx, span, _is_pinned, c_ids) in enumerate(encoded_candidates):
+        for idx, (orig_idx, span, is_pinned, c_ids) in enumerate(encoded_candidates):
             if remaining < 2:
                 break
             peers_ahead = sum(
@@ -370,9 +367,18 @@ class JevWindowPacker:
             if avail_for_this < 1:
                 continue
 
+            if is_pinned:
+                slot_cap = pinned_per_span_cap
+            else:
+                if unpinned_per_span_cap is None:
+                    unpinned_left = len(encoded_candidates) - idx
+                    unpinned_slots = min(unpinned_left, min(8, max(1, remaining // 8)))
+                    unpinned_per_span_cap = max(1, (remaining // max(1, unpinned_slots)) - 1)
+                slot_cap = unpinned_per_span_cap
+
             cap_for_this = (
-                min(avail_for_this, soft_per_span_cap)
-                if idx < len(encoded_candidates) - 1 and len(c_ids) > soft_per_span_cap
+                min(avail_for_this, slot_cap)
+                if idx < len(encoded_candidates) - 1 and len(c_ids) > slot_cap
                 else avail_for_this
             )
             sliced_ids, _ = _middle_elide_ids(c_ids, cap_for_this)
@@ -410,13 +416,13 @@ class JevWindowPacker:
         intent_ids: list[int] = []
         if has_intent:
             raw_intent_ids = self._encode_safe(clean_intent)
-            intent_cap = max(8, avail // 5)
+            intent_cap = min(max(1, avail - 1), max(8, avail // 5))
             intent_ids, cut_intent = _middle_elide_ids(raw_intent_ids, intent_cap)
             was_truncated = was_truncated or cut_intent
             avail -= len(intent_ids)
 
         raw_call_ids = self._encode_safe(f"{call.server}.{call.tool}")
-        call_cap = max(4, avail // 8)
+        call_cap = min(avail, max(4, avail // 8))
         call_head_ids, cut_call = _middle_elide_ids(raw_call_ids, call_cap)
         was_truncated = was_truncated or cut_call
         avail -= len(call_head_ids)
@@ -435,7 +441,11 @@ class JevWindowPacker:
             flat_items = [*head_items, (tail_key, merged_tail_val)]
 
         has_spans = bool(snapshot.private_spans or snapshot.untrusted_spans)
-        arg_budget = avail if not has_spans else max(min(avail, len(flat_items) * 4), int(avail * 0.45))
+        arg_budget = (
+            avail
+            if not has_spans
+            else min(avail, max(len(flat_items) * 4, int(avail * 0.45)))
+        )
 
         encoded_args_raw: list[tuple[str, list[int]]] = [
             (k, self._encode_safe(f"{k}={v}")) for k, v in flat_items

@@ -198,16 +198,49 @@ def _scrub_encoded_tokens(
                 return True
         return False
 
+    def _b64_segment_is_sensitive(seg: str) -> bool:
+        if len(seg) >= 12 and _b64_token_is_sensitive(seg):
+            return True
+        if "_" in seg or "-" in seg:
+            for part in re.split(r"[_-]+", seg):
+                if len(part) >= 12 and _b64_token_is_sensitive(part):
+                    return True
+        return False
+
     def _replace_b64(match: re.Match[str]) -> str:
         tok = match.group(0)
         if "REDACTED" in tok:
             return tok
         if _b64_token_is_sensitive(tok):
             return placeholder
-        if "_" in tok or "-" in tok:
-            for part in re.split(r"[_-]+", tok):
-                if len(part) >= 12 and _b64_token_is_sensitive(part):
-                    return placeholder
+        if "/" in tok:
+            slash_parts = tok.split("/")
+            out_parts: list[str] = []
+            replaced = False
+            idx = 0
+            n_parts = len(slash_parts)
+            while idx < n_parts:
+                matched_span = False
+                max_end = min(n_parts, idx + 6)
+                for end in range(max_end, idx + 1, -1):
+                    joined = "/".join(slash_parts[idx:end])
+                    if len(joined) >= 12 and _b64_token_is_sensitive(joined):
+                        out_parts.append(placeholder)
+                        idx = end
+                        replaced = True
+                        matched_span = True
+                        break
+                if not matched_span:
+                    seg = slash_parts[idx]
+                    if _b64_segment_is_sensitive(seg):
+                        out_parts.append(placeholder)
+                        replaced = True
+                    else:
+                        out_parts.append(seg)
+                    idx += 1
+            return "/".join(out_parts) if replaced else tok
+        if _b64_segment_is_sensitive(tok):
+            return placeholder
         return tok
 
     out = _B64_CANDIDATE_RE.sub(_replace_b64, out)
@@ -312,27 +345,47 @@ def redact_call_arguments(
     all_spans = _dedupe_spans(leaked_span, private_spans)
     exact_needles, ci_needles, raw_markers = _collect_span_needles(all_spans)
 
+    def _redact_all_leaves(subnode: Any) -> tuple[Any, bool]:
+        if isinstance(subnode, dict):
+            changed = False
+            for k, v in list(subnode.items()):
+                new_v, child_changed = _redact_all_leaves(v)
+                subnode[k] = new_v
+                changed = changed or child_changed
+            return subnode, changed
+        if isinstance(subnode, list):
+            changed = False
+            for idx, item in enumerate(subnode):
+                new_item, child_changed = _redact_all_leaves(item)
+                subnode[idx] = new_item
+                changed = changed or child_changed
+            return subnode, changed
+        if isinstance(subnode, tuple):
+            changed = False
+            out_items: list[Any] = []
+            for item in subnode:
+                new_item, child_changed = _redact_all_leaves(item)
+                out_items.append(new_item)
+                changed = changed or child_changed
+            return tuple(out_items), changed
+        if subnode is None:
+            return None, False
+        return REDACTED_CALL_PLACEHOLDER, True
+
     def _transform(prefix: str, node: Any) -> tuple[Any, bool]:
         if isinstance(node, dict):
             changed_any = False
-            sub_before: dict[str, Any] = {}
             for k, v in list(node.items()):
                 key_s = str(k)
                 child_path = f"{prefix}.{key_s}" if prefix else key_s
-                sub_before[key_s] = v
                 new_v, child_changed = _transform(child_path, v)
                 node[k] = new_v
                 changed_any = changed_any or child_changed
 
             # If a container itself was named as attributed_arg_key and nothing inside matched a substring,
-            # redact string leaves inside that attributed container fail-closed.
+            # recursively redact leaves inside that attributed container fail-closed.
             if prefix and prefix == attributed_arg_key and not changed_any:
-                for k, v in list(node.items()):
-                    if isinstance(v, str):
-                        node[k] = REDACTED_CALL_PLACEHOLDER
-                        changed_any = True
-                    elif key_s := str(k):
-                        _ = sub_before.get(key_s)
+                return _redact_all_leaves(node)
             return node, changed_any
 
         if isinstance(node, list):
@@ -343,11 +396,21 @@ def redact_call_arguments(
                 node[idx] = new_item
                 changed_any = changed_any or child_changed
             if prefix and prefix == attributed_arg_key and not changed_any:
-                for idx, item in enumerate(node):
-                    if isinstance(item, str):
-                        node[idx] = REDACTED_CALL_PLACEHOLDER
-                        changed_any = True
+                return _redact_all_leaves(node)
             return node, changed_any
+
+        if isinstance(node, tuple):
+            changed_any = False
+            out_items: list[Any] = []
+            for idx, item in enumerate(node):
+                child_path = f"{prefix}[{idx}]" if prefix else f"[{idx}]"
+                new_item, child_changed = _transform(child_path, item)
+                out_items.append(new_item)
+                changed_any = changed_any or child_changed
+            new_tuple = tuple(out_items)
+            if prefix and prefix == attributed_arg_key and not changed_any:
+                return _redact_all_leaves(new_tuple)
+            return new_tuple, changed_any
 
         if isinstance(node, str):
             is_attr = _path_matches_attributed(prefix, attributed_arg_key)
