@@ -419,6 +419,95 @@ def test_export_from_saved_checkpoint_and_cli_smoke(tmp_path: Path) -> None:
         validate_bundle_dir(cli_out_dir / sub, verify_sha256=True)
 
 
+def test_external_data_fp32_onnx_preserved_and_quantized_to_self_contained_int8_and_keep_fp32_hygiene(
+    tmp_path: Path,
+) -> None:
+    from onnx.external_data_helper import convert_model_to_external_data
+
+    from diodemodel.export_bundle import (
+        bake_onnx_logit_temperatures,
+        collect_excluded_onnx_nodes,
+        export_diode_bundle,
+        export_fp32_onnx,
+        quantize_onnx_matmul_int8,
+        read_onnx_logit_temperatures,
+        verify_onnx_no_bool_where,
+    )
+
+    _, special_ids, vocab_size, pad_id = _golden_tokenizer_info()
+    model = _tiny_nanojev(vocab_size=vocab_size, pad_id=pad_id)
+
+    # 1. Export FP32 ONNX and convert initializers >= 256 bytes to TensorProto.EXTERNAL
+    # (simulating >2GB NanoJev-0.6B FP32 export without allocating 2.4 GB RAM).
+    fp32_dir = tmp_path / "ext_fp32"
+    fp32_path = export_fp32_onnx(model, fp32_dir / "model_fp32.onnx")
+    proto_ext = onnx.load(str(fp32_path))
+    convert_model_to_external_data(
+        proto_ext,
+        all_tensors_to_one_file=True,
+        location="model_fp32.onnx.data",
+        size_threshold=256,
+        convert_attribute=False,
+    )
+    onnx.save_model(proto_ext, str(fp32_path))
+    assert (fp32_dir / "model_fp32.onnx.data").is_file()
+
+    # Verify external data descriptors are present before quantization
+    loaded_meta = onnx.load(str(fp32_path), load_external_data=False)
+    assert any(
+        init.data_location == TensorProto.EXTERNAL for init in loaded_meta.graph.initializer
+    )
+
+    # 2. Verify helpers and quantize_onnx_matmul_int8 do NOT strip TensorProto.EXTERNAL from fp32_path
+    verify_onnx_no_bool_where(fp32_path)
+    excluded = collect_excluded_onnx_nodes(fp32_path)
+    assert len(excluded) > 0
+    temps = read_onnx_logit_temperatures(fp32_path)
+    np.testing.assert_allclose(temps, [1.0, 1.0, 1.0], rtol=1e-6)
+
+    int8_dir = tmp_path / "int8_out"
+    int8_path = int8_dir / "model_int8.onnx"
+    quantize_onnx_matmul_int8(fp32_path, int8_path)
+
+    # Critical check: quantize_onnx_matmul_int8 must NOT have overwritten fp32_path with inline raw_data!
+    after_fp32_meta = onnx.load(str(fp32_path), load_external_data=False)
+    assert any(
+        init.data_location == TensorProto.EXTERNAL for init in after_fp32_meta.graph.initializer
+    ), "quantize_onnx_matmul_int8 stripped TensorProto.EXTERNAL from fp32_path!"
+
+    # And the resulting model_int8.onnx must be self-contained and valid
+    bake_onnx_logit_temperatures(int8_path, [1.2, 0.9, 1.1])
+    validate_onnx_contract(int8_path)
+    int8_meta = onnx.load(str(int8_path), load_external_data=False)
+    assert all(
+        init.data_location != TensorProto.EXTERNAL for init in int8_meta.graph.initializer
+    )
+
+    # 3. Verify keep_fp32_onnx=True keeps bundle_dir strictly limited to the 4 REQUIRED_BUNDLE_FILES
+    val_rows = make_synthetic_curriculum_dataset(
+        8, vocab_size=vocab_size, seed=707, pad_token_id=pad_id
+    )
+    bundle_dir = tmp_path / "clean_bundle"
+    res = export_diode_bundle(
+        model,
+        bundle_dir,
+        tokenizer_source=GOLDEN_TOKENIZER_PATH,
+        model_id="DiodeMCP-NanoJev-0.6B",
+        val_calib_rows=val_rows,
+        special_token_ids=special_ids,
+        calib_buckets=(128, 256),
+        keep_fp32_onnx=True,
+    )
+    validate_bundle_dir(bundle_dir, verify_sha256=True)
+    bundle_entries = sorted(p.name for p in bundle_dir.iterdir())
+    assert bundle_entries == sorted(REQUIRED_BUNDLE_FILES), (
+        f"Unexpected extra files in bundle_dir when keep_fp32_onnx=True: {bundle_entries}"
+    )
+    assert res["fp32_onnx_path"] is not None
+    assert Path(res["fp32_onnx_path"]).is_file()
+    assert Path(res["fp32_onnx_path"]).parent != bundle_dir
+
+
 def test_benchmark_suite_metrics_latency_and_comparison_table(tmp_path: Path) -> None:
     from diodemodel.benchmark_suite import (
         format_benchmark_comparison_table,

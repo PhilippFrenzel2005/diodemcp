@@ -169,7 +169,7 @@ def make_dummy_export_batch(
 def verify_onnx_no_bool_where(model_or_path: onnx.ModelProto | Path | str) -> None:
     """Verify that no ONNX ``Where`` node selects between ``BOOL`` data tensors (unsupported on ORT CPU)."""
     proto = (
-        onnx.load(str(model_or_path))
+        onnx.load(str(model_or_path), load_external_data=False)
         if isinstance(model_or_path, (str, Path))
         else model_or_path
     )
@@ -213,7 +213,7 @@ def collect_excluded_onnx_nodes(model_or_path: onnx.ModelProto | Path | str) -> 
       ``Q @ K^T`` and ``attn_probs @ V``).
     """
     proto = (
-        onnx.load(str(model_or_path))
+        onnx.load(str(model_or_path), load_external_data=False)
         if isinstance(model_or_path, (str, Path))
         else model_or_path
     )
@@ -297,7 +297,7 @@ def export_fp32_onnx(
         if was_training:
             model.train()
 
-    proto = onnx.load(str(out_path))
+    proto = onnx.load(str(out_path), load_external_data=False)
     pin_onnx_output_shapes(proto)
     add_pre_process_metadata(proto)
     verify_onnx_no_bool_where(proto)
@@ -319,7 +319,7 @@ def quantize_onnx_matmul_int8(
     dst_path = Path(int8_onnx_path)
     dst_path.parent.mkdir(parents=True, exist_ok=True)
 
-    fp32_proto = onnx.load(str(src_path))
+    fp32_proto = onnx.load(str(src_path), load_external_data=False)
     add_pre_process_metadata(fp32_proto)
     pin_onnx_output_shapes(fp32_proto)
     onnx.save(fp32_proto, str(src_path))
@@ -336,7 +336,7 @@ def quantize_onnx_matmul_int8(
         extra_options={"MatMulConstBOnly": True},
     )
 
-    q_proto = onnx.load(str(dst_path))
+    q_proto = onnx.load(str(dst_path), load_external_data=False)
     pin_onnx_output_shapes(q_proto)
     verify_onnx_no_bool_where(q_proto)
     onnx.save(q_proto, str(dst_path))
@@ -360,13 +360,18 @@ def quantize_onnx_matmul_int8(
 
 def read_onnx_logit_temperatures(onnx_path_or_model: Path | str | onnx.ModelProto) -> np.ndarray:
     """Read the 3-element FP32 ``logit_temperatures`` initializer from an ONNX model."""
+    is_path = isinstance(onnx_path_or_model, (str, Path))
     proto = (
-        onnx.load(str(onnx_path_or_model))
-        if isinstance(onnx_path_or_model, (str, Path))
+        onnx.load(str(onnx_path_or_model), load_external_data=False)
+        if is_path
         else onnx_path_or_model
     )
     for init in proto.graph.initializer:
         if init.name == "logit_temperatures":
+            if init.data_location == TensorProto.EXTERNAL and is_path:
+                onnx.external_data_helper.load_external_data_for_tensor(
+                    init, str(Path(onnx_path_or_model).parent)  # type: ignore[arg-type]
+                )
             arr = np.asarray(numpy_helper.to_array(init), dtype=np.float32).reshape(-1)
             if arr.shape != (NUM_NOUL_HEADS,):
                 raise ValueError(
@@ -393,7 +398,7 @@ def bake_onnx_logit_temperatures(
     if not bool(np.all(np.isfinite(t_arr))) or bool(np.any(t_arr <= 0.0)):
         raise ValueError(f"temperatures must be finite and > 0, got {t_arr.tolist()}")
 
-    proto = onnx.load(str(path))
+    proto = onnx.load(str(path), load_external_data=False)
     found = False
     for init in proto.graph.initializer:
         if init.name == "logit_temperatures":
@@ -667,12 +672,15 @@ def export_diode_bundle(
 
     # 3. Export FP32 opset-17 ONNX and quantize backbone MatMul/Gemm to INT8
     int8_onnx_path = out_dir / "model_int8.onnx"
+    kept_fp32_path: Path | None = None
     with tempfile.TemporaryDirectory(prefix="diodemodel_fp32_") as tmp_dir:
-        fp32_path = (
-            (out_dir / "model_fp32.onnx")
-            if keep_fp32_onnx
-            else (Path(tmp_dir) / "model_fp32.onnx")
-        )
+        if keep_fp32_onnx:
+            fp32_dir = out_dir.parent / f"{out_dir.name}_fp32"
+            fp32_dir.mkdir(parents=True, exist_ok=True)
+            fp32_path = fp32_dir / "model_fp32.onnx"
+            kept_fp32_path = fp32_path
+        else:
+            fp32_path = Path(tmp_dir) / "model_fp32.onnx"
         export_fp32_onnx(
             export_model,
             fp32_path,
@@ -773,6 +781,7 @@ def export_diode_bundle(
 
     return {
         "bundle_dir": out_dir,
+        "fp32_onnx_path": kept_fp32_path,
         "manifest": validated_manifest,
         "calibration": calibration_payload,
         "quantization": quant_info,
