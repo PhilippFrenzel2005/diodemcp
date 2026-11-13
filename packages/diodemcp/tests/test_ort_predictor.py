@@ -1362,6 +1362,126 @@ def test_ort_predictor_aligns_per_head_thresholds_without_attenuating_tier0(
     assert z_scores.p_hijack == pytest.approx(0.54, abs=1e-5)
 
 
+def test_hub_falls_back_to_github_releases_on_hf_404_and_supports_private_token_without_leaking_auth(
+    synthetic_jev_bundle_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from diodemcp.hub import GITHUB_RELEASE_FALLBACK_URLS
+
+    assert (
+        GITHUB_RELEASE_FALLBACK_URLS["base"]
+        == "https://github.com/PhilippFrenzel2005/diodemcp/releases/download/models-v2.0-base"
+    )
+    assert (
+        GITHUB_RELEASE_FALLBACK_URLS["nano"]
+        == "https://github.com/PhilippFrenzel2005/diodemcp/releases/download/models-v2.0-nano"
+    )
+    assert MODEL_ALIASES["gh-base"] == GITHUB_RELEASE_FALLBACK_URLS["base"]
+    assert MODEL_ALIASES["gh-nano"] == GITHUB_RELEASE_FALLBACK_URLS["nano"]
+
+    # Case 1: Public GitHub Release fallback when HF manifest returns 404
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.delenv("DIODEMCP_GITHUB_TOKEN", raising=False)
+
+    seen_urls: list[str] = []
+
+    def _public_fallback_handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        seen_urls.append(url)
+        if url.startswith("https://huggingface.co/diodemcp/diodemcp-jev-base-int8/resolve/main/"):
+            return httpx.Response(404, text="Not Found")
+        gh_prefix = "https://github.com/PhilippFrenzel2005/diodemcp/releases/download/models-v2.0-base/"
+        if url.startswith(gh_prefix):
+            fname = url[len(gh_prefix) :]
+            return httpx.Response(
+                302,
+                headers={"Location": f"https://objects.githubusercontent.com/release-asset/{fname}"},
+            )
+        cdn_prefix = "https://objects.githubusercontent.com/release-asset/"
+        if url.startswith(cdn_prefix):
+            fname = url[len(cdn_prefix) :]
+            fpath = synthetic_jev_bundle_dir / fname
+            if fpath.is_file():
+                return httpx.Response(200, content=fpath.read_bytes())
+        return httpx.Response(404, text="Not Found")
+
+    pub_cache = tmp_path / "pub_fallback_cache"
+    with httpx.Client(transport=httpx.MockTransport(_public_fallback_handler)) as pub_client:
+        resolved = download_and_verify_bundle("base", pub_cache, progress=False, client=pub_client)
+        assert validate_bundle_dir(resolved, verify_sha256=True).bundle_version == "1.0"
+        assert any("huggingface.co" in u for u in seen_urls)
+        assert any("objects.githubusercontent.com" in u for u in seen_urls)
+
+    # Case 2: Non-404 error (HTTP 500 on HF manifest) must NOT trigger fallback
+    def _hf_500_handler(request: httpx.Request) -> httpx.Response:
+        if "huggingface.co" in str(request.url):
+            return httpx.Response(500, text="Internal Server Error")
+        raise AssertionError(f"Unexpected fallback request on HTTP 500: {request.url}")
+
+    with httpx.Client(transport=httpx.MockTransport(_hf_500_handler)) as err_client:
+        with pytest.raises(BundleDownloadError):
+            download_and_verify_bundle("base", tmp_path / "err_cache", progress=False, client=err_client)
+
+    # Case 3: Private GitHub Release (browser URL returns 404, GITHUB_TOKEN resolves via api.github.com
+    # and strips Authorization header on cross-host S3 redirect)
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_test_secret_token_123")
+    s3_auth_headers_seen: list[str | None] = []
+
+    asset_map = {
+        fname: idx + 100
+        for idx, fname in enumerate(("manifest.json", "model_int8.onnx", "tokenizer.json", "calibration.json"))
+    }
+    id_to_fname = {v: k for k, v in asset_map.items()}
+
+    def _private_gh_handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if "huggingface.co" in url:
+            return httpx.Response(404, text="Not Found")
+        if url.startswith("https://github.com/PhilippFrenzel2005/diodemcp/releases/download/"):
+            return httpx.Response(404, text="Private repo requires API asset endpoint")
+        if url == "https://api.github.com/repos/PhilippFrenzel2005/diodemcp/releases/tags/models-v2.0-nano":
+            assert request.headers.get("Authorization") == "Bearer ghp_test_secret_token_123"
+            return httpx.Response(
+                200,
+                json={
+                    "assets": [
+                        {
+                            "name": fname,
+                            "url": f"https://api.github.com/repos/PhilippFrenzel2005/diodemcp/releases/assets/{aid}",
+                        }
+                        for fname, aid in asset_map.items()
+                    ]
+                },
+            )
+        asset_prefix = "https://api.github.com/repos/PhilippFrenzel2005/diodemcp/releases/assets/"
+        if url.startswith(asset_prefix):
+            assert request.headers.get("Authorization") == "Bearer ghp_test_secret_token_123"
+            assert request.headers.get("Accept") == "application/octet-stream"
+            aid = int(url[len(asset_prefix) :])
+            fname = id_to_fname[aid]
+            return httpx.Response(
+                302,
+                headers={"Location": f"https://objects.githubusercontent.com/private-s3/{fname}?sig=ok"},
+            )
+        s3_prefix = "https://objects.githubusercontent.com/private-s3/"
+        if url.startswith(s3_prefix):
+            # CRITICAL: Authorization header MUST NOT leak to S3 signed URL
+            s3_auth_headers_seen.append(request.headers.get("Authorization"))
+            fname = url[len(s3_prefix) :].split("?", 1)[0]
+            return httpx.Response(200, content=(synthetic_jev_bundle_dir / fname).read_bytes())
+        return httpx.Response(404, text="Not Found")
+
+    priv_cache = tmp_path / "priv_fallback_cache"
+    with httpx.Client(transport=httpx.MockTransport(_private_gh_handler)) as priv_client:
+        priv_resolved = download_and_verify_bundle("nano", priv_cache, progress=False, client=priv_client)
+        assert validate_bundle_dir(priv_resolved, verify_sha256=True).bundle_version == "1.0"
+        assert len(s3_auth_headers_seen) == 4
+        assert all(h is None for h in s3_auth_headers_seen)
+
+
+
 
 
 

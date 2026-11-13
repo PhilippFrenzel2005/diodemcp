@@ -1,0 +1,98 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="410" viewBox="0 0 1080 410" role="img" aria-label="DiodeMCP v2 Suite A Benchmark Comparison: Attack Recall vs Benign Developer False Positive Rate">
+  <defs>
+    <linearGradient id="benchBgD" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0b0f17"/>
+      <stop offset="100%" stop-color="#0f172a"/>
+    </linearGradient>
+    <linearGradient id="barNano" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#06b6d4"/>
+      <stop offset="100%" stop-color="#10b981"/>
+    </linearGradient>
+    <linearGradient id="barBase" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#0284c7"/>
+      <stop offset="100%" stop-color="#22d3ee"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="1" y="1" width="1078" height="408" rx="16" fill="url(#benchBgD)" stroke="#1e293b" stroke-width="1.5"/>
+
+  <!-- Header -->
+  <text x="32" y="38" fill="#f8fafc" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="18" font-weight="800">Suite A Multi-Turn MCP Security Benchmark (600 Deterministic Trajectories)</text>
+  <text x="32" y="58" fill="#94a3b8" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5">Autonomous Hard-Block Gate · Air-gapped Intel Core i3-10100 (4 CPU threads, INT8 ONNX, zero GPU)</text>
+
+  <!-- Left Panel: Attack Recall -->
+  <rect x="28" y="76" width="500" height="306" rx="12" fill="#111827" stroke="#334155"/>
+  <text x="48" y="104" fill="#f1f5f9" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="14" font-weight="700">Multi-Turn Attack Recall</text>
+  <text x="508" y="104" text-anchor="end" fill="#34d399" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" font-weight="600">HIGHER IS BETTER (360 attacks)</text>
+
+  <!-- Row 1: NanoJev -->
+  <text x="48" y="146" fill="#f8fafc" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12.5" font-weight="700">DiodeMCP NanoJev-0.6B</text>
+  <rect x="218" y="132" width="230" height="20" rx="5" fill="#1e293b"/>
+  <rect x="218" y="132" width="220" height="20" rx="5" fill="url(#barNano)"/>
+  <text x="458" y="147" fill="#34d399" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5" font-weight="700">95.6%</text>
+
+  <!-- Row 2: Base-149M -->
+  <text x="48" y="194" fill="#e2e8f0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12.5" font-weight="700">DiodeMCP Base-149M</text>
+  <rect x="218" y="180" width="230" height="20" rx="5" fill="#1e293b"/>
+  <rect x="218" y="180" width="217" height="20" rx="5" fill="url(#barBase)"/>
+  <text x="458" y="195" fill="#38bdf8" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5" font-weight="700">94.4%</text>
+
+  <!-- Row 3: Tier-0 Only -->
+  <text x="48" y="242" fill="#cbd5e1" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12.5">DiodeMCP Tier-0 (Rules)</text>
+  <rect x="218" y="228" width="230" height="20" rx="5" fill="#1e293b"/>
+  <rect x="218" y="228" width="217" height="20" rx="5" fill="#64748b"/>
+  <text x="458" y="243" fill="#cbd5e1" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5">94.4%</text>
+
+  <!-- Row 4: ProtectAI -->
+  <text x="48" y="290" fill="#cbd5e1" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12.5">ProtectAI LLM-Guard</text>
+  <rect x="218" y="276" width="230" height="20" rx="5" fill="#1e293b"/>
+  <rect x="218" y="276" width="213" height="20" rx="5" fill="#475569"/>
+  <text x="458" y="291" fill="#cbd5e1" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5">92.8%</text>
+
+  <!-- Row 5: Cisco -->
+  <text x="48" y="338" fill="#cbd5e1" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12.5">Cisco mcp-scanner</text>
+  <rect x="218" y="324" width="230" height="20" rx="5" fill="#1e293b"/>
+  <rect x="218" y="324" width="29" height="20" rx="5" fill="#f43f5e"/>
+  <text x="458" y="339" fill="#fda4af" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5">12.5%</text>
+
+  <text x="48" y="368" fill="#64748b" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10.5">AUROC: NanoJev 0.999 · Base-149M 0.990 · LLM-Guard 0.742 · Cisco 0.562</text>
+
+  <!-- Right Panel: Benign FPR -->
+  <rect x="552" y="76" width="500" height="306" rx="12" fill="#111827" stroke="#334155"/>
+  <text x="572" y="104" fill="#f1f5f9" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="14" font-weight="700">Benign Developer False-Positive Rate</text>
+  <text x="1032" y="104" text-anchor="end" fill="#38bdf8" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" font-weight="600">LOWER IS BETTER (240 twins)</text>
+
+  <!-- Row 1: NanoJev -->
+  <text x="572" y="146" fill="#f8fafc" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12.5" font-weight="700">DiodeMCP NanoJev-0.6B</text>
+  <rect x="742" y="132" width="218" height="20" rx="5" fill="#1e293b"/>
+  <rect x="742" y="132" width="4" height="20" rx="2" fill="#10b981"/>
+  <text x="970" y="147" fill="#34d399" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5" font-weight="700">0.4%</text>
+  <text x="1008" y="146" fill="#6ee7b7" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10">(1/240)</text>
+
+  <!-- Row 2: Base-149M -->
+  <text x="572" y="194" fill="#e2e8f0" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12.5" font-weight="700">DiodeMCP Base-149M</text>
+  <rect x="742" y="180" width="218" height="20" rx="5" fill="#1e293b"/>
+  <rect x="742" y="180" width="6" height="20" rx="3" fill="#22d3ee"/>
+  <text x="970" y="195" fill="#38bdf8" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5" font-weight="700">1.2%</text>
+  <text x="1008" y="194" fill="#7dd3fc" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10">(3/240)</text>
+
+  <!-- Row 3: Tier-0 Only -->
+  <text x="572" y="242" fill="#cbd5e1" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12.5">DiodeMCP Tier-0 (Rules)</text>
+  <rect x="742" y="228" width="218" height="20" rx="5" fill="#1e293b"/>
+  <rect x="742" y="228" width="54" height="20" rx="5" fill="#f59e0b"/>
+  <text x="970" y="243" fill="#fcd34d" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5">15.4%</text>
+
+  <!-- Row 4: ProtectAI -->
+  <text x="572" y="290" fill="#cbd5e1" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12.5">ProtectAI LLM-Guard</text>
+  <rect x="742" y="276" width="218" height="20" rx="5" fill="#1e293b"/>
+  <rect x="742" y="276" width="196" height="20" rx="5" fill="#f43f5e"/>
+  <text x="970" y="291" fill="#fda4af" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5" font-weight="700">55.8%</text>
+
+  <!-- Row 5: Cisco -->
+  <text x="572" y="338" fill="#cbd5e1" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12.5">Cisco mcp-scanner</text>
+  <rect x="742" y="324" width="218" height="20" rx="5" fill="#1e293b"/>
+  <rect x="742" y="324" width="2" height="20" rx="1" fill="#64748b"/>
+  <text x="970" y="339" fill="#94a3b8" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5">0.0%*</text>
+
+  <text x="572" y="368" fill="#64748b" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10.5">*Cisco native rules miss 87.5% of multi-turn attacks · 134x lower FPR vs LLM-Guard</text>
+</svg>

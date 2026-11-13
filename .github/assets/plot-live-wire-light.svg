@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="390" viewBox="0 0 1080 390" role="img" aria-label="Suite B Live MCP stdio Wire Recall and p50 Latency">
+  <defs>
+    <linearGradient id="wbBg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#f8fafc"/><stop offset="100%" stop-color="#f1f5f9"/></linearGradient>
+  </defs>
+  <rect x="1" y="1" width="1078" height="388" rx="16" fill="url(#wbBg)" stroke="#cbd5e1" stroke-width="1.5"/>
+  <text x="32" y="36" fill="#0f172a" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="18" font-weight="800">Suite B Live MCP stdio Wire Benchmark (30 Real Child-Process Sessions)</text>
+  <text x="32" y="56" fill="#475569" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5">20 Live Wire Attacks (5 per category) + 10 Benign Sessions · 0.0% Benign Wire FPR across DiodeMCP tiers</text>
+  <rect x="28" y="72" width="536" height="294" rx="12" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="48" y="98" fill="#0f172a" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="14" font-weight="700">Live Wire Attacks Blocked by Attack Surface (/20)</text>
+  <rect x="584" y="72" width="468" height="294" rx="12" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="604" y="98" fill="#0f172a" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="14" font-weight="700">Wire p50 Overhead (Log ms)</text>
+  <text x="1032" y="98" text-anchor="end" fill="#047857" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" font-weight="700">40.6x FASTER vs LLM-GUARD</text>
+  <rect x="48" y="110" width="10" height="10" rx="2" fill="#0891b2"/>
+  <text x="62" y="119" fill="#475569" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10">tools/list Poison</text>
+  <rect x="172" y="110" width="10" height="10" rx="2" fill="#059669"/>
+  <text x="186" y="119" fill="#475569" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10">Catalog Rug-Pull</text>
+  <rect x="296" y="110" width="10" height="10" rx="2" fill="#2563eb"/>
+  <text x="310" y="119" fill="#475569" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10">Cross-Server Exfil</text>
+  <rect x="420" y="110" width="10" height="10" rx="2" fill="#7c3aed"/>
+  <text x="434" y="119" fill="#475569" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10">Error/Oversize RPC</text>
+  <text x="48" y="155" fill="#0f172a" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" font-weight="700">DiodeMCP NanoJev-0.6B</text>
+  <rect x="216.0" y="140" width="240.0" height="20" rx="5" fill="#e2e8f0"/>
+  <rect x="216.0" y="140" width="60.0" height="20" rx="3" fill="#0891b2"/>
+  <rect x="276.0" y="140" width="60.0" height="20" rx="3" fill="#059669"/>
+  <rect x="336.0" y="140" width="60.0" height="20" rx="3" fill="#2563eb"/>
+  <rect x="396.0" y="140" width="48.0" height="20" rx="3" fill="#7c3aed"/>
+  <text x="466.0" y="155" fill="#047857" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" font-weight="700">95% (19/20)</text>
+  <text x="604" y="155" fill="#0f172a" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" font-weight="700">NanoJev-0.6B</text>
+  <rect x="760.0" y="140" width="200.0" height="20" rx="5" fill="#e2e8f0"/>
+  <rect x="760.0" y="140" width="109.7" height="20" rx="5" fill="#059669"/>
+  <text x="970.0" y="155" fill="#0f172a" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" font-weight="700">7.82 ms</text>
+  <text x="48" y="191" fill="#0f172a" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" font-weight="700">DiodeMCP Base-149M</text>
+  <rect x="216.0" y="176" width="240.0" height="20" rx="5" fill="#e2e8f0"/>
+  <rect x="216.0" y="176" width="60.0" height="20" rx="3" fill="#0891b2"/>
+  <rect x="276.0" y="176" width="60.0" height="20" rx="3" fill="#059669"/>
+  <rect x="336.0" y="176" width="60.0" height="20" rx="3" fill="#2563eb"/>
+  <rect x="396.0" y="176" width="48.0" height="20" rx="3" fill="#7c3aed"/>
+  <text x="466.0" y="191" fill="#047857" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" font-weight="700">95% (19/20)</text>
+  <text x="604" y="191" fill="#0f172a" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" font-weight="700">Base-149M</text>
+  <rect x="760.0" y="176" width="200.0" height="20" rx="5" fill="#e2e8f0"/>
+  <rect x="760.0" y="176" width="118.6" height="20" rx="5" fill="#0284c7"/>
+  <text x="970.0" y="191" fill="#0f172a" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" font-weight="700">11.78 ms</text>
+  <text x="48" y="227" fill="#475569" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" font-weight="500">ProtectAI LLM-Guard</text>
+  <rect x="216.0" y="212" width="240.0" height="20" rx="5" fill="#e2e8f0"/>
+  <rect x="216.0" y="212" width="60.0" height="20" rx="3" fill="#0891b2"/>
+  <rect x="276.0" y="212" width="60.0" height="20" rx="3" fill="#059669"/>
+  <rect x="336.0" y="212" width="60.0" height="20" rx="3" fill="#2563eb"/>
+  <rect x="396.0" y="212" width="60.0" height="20" rx="3" fill="#7c3aed"/>
+  <text x="466.0" y="227" fill="#047857" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" font-weight="500">100% (20/20)</text>
+  <text x="604" y="227" fill="#475569" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" font-weight="500">LLM-Guard</text>
+  <rect x="760.0" y="212" width="200.0" height="20" rx="5" fill="#e2e8f0"/>
+  <rect x="760.0" y="212" width="190.1" height="20" rx="5" fill="#e11d48"/>
+  <text x="970.0" y="227" fill="#475569" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" font-weight="500">317.22 ms</text>
+  <text x="48" y="263" fill="#475569" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" font-weight="500">DiodeMCP Tier-0 Rules</text>
+  <rect x="216.0" y="248" width="240.0" height="20" rx="5" fill="#e2e8f0"/>
+  <rect x="216.0" y="248" width="12.0" height="20" rx="3" fill="#0891b2"/>
+  <rect x="228.0" y="248" width="60.0" height="20" rx="3" fill="#2563eb"/>
+  <rect x="288.0" y="248" width="36.0" height="20" rx="3" fill="#7c3aed"/>
+  <text x="466.0" y="263" fill="#475569" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" font-weight="500">45% (9/20)</text>
+  <text x="604" y="263" fill="#475569" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" font-weight="500">Tier-0 Rules</text>
+  <rect x="760.0" y="248" width="200.0" height="20" rx="5" fill="#e2e8f0"/>
+  <rect x="760.0" y="248" width="109.3" height="20" rx="5" fill="#64748b"/>
+  <text x="970.0" y="263" fill="#475569" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" font-weight="500">7.66 ms</text>
+  <text x="48" y="299" fill="#475569" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" font-weight="500">Cisco mcp-scanner</text>
+  <rect x="216.0" y="284" width="240.0" height="20" rx="5" fill="#e2e8f0"/>
+  <rect x="216.0" y="284" width="36.0" height="20" rx="3" fill="#0891b2"/>
+  <rect x="252.0" y="284" width="60.0" height="20" rx="3" fill="#059669"/>
+  <text x="466.0" y="299" fill="#475569" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" font-weight="500">40% (8/20)</text>
+  <text x="604" y="299" fill="#475569" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" font-weight="500">Cisco mcp-scanner</text>
+  <rect x="760.0" y="284" width="200.0" height="20" rx="5" fill="#e2e8f0"/>
+  <rect x="760.0" y="284" width="4.0" height="20" rx="5" fill="#64748b"/>
+  <text x="970.0" y="299" fill="#475569" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" font-weight="500">0.00 ms</text>
+  <text x="48" y="335" fill="#475569" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" font-weight="500">Stateless Regex Policy</text>
+  <rect x="216.0" y="320" width="240.0" height="20" rx="5" fill="#e2e8f0"/>
+  <rect x="216.0" y="320" width="48.0" height="20" rx="3" fill="#0891b2"/>
+  <rect x="264.0" y="320" width="60.0" height="20" rx="3" fill="#059669"/>
+  <rect x="324.0" y="320" width="36.0" height="20" rx="3" fill="#2563eb"/>
+  <rect x="360.0" y="320" width="12.0" height="20" rx="3" fill="#7c3aed"/>
+  <text x="466.0" y="335" fill="#475569" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" font-weight="500">65% (13/20)</text>
+  <text x="604" y="335" fill="#475569" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12" font-weight="500">Stateless Regex</text>
+  <rect x="760.0" y="320" width="200.0" height="20" rx="5" fill="#e2e8f0"/>
+  <rect x="760.0" y="320" width="42.4" height="20" rx="5" fill="#64748b"/>
+  <text x="970.0" y="335" fill="#475569" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" font-weight="500">0.35 ms</text>
+  <text x="604" y="354" fill="#64748b" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10">95% wire recall at 7.8–11.8 ms p50 (vs. 317.2 ms LLM-Guard)</text>
+</svg>

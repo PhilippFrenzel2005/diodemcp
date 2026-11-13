@@ -67,22 +67,40 @@ def _sync_config_toml_tier0_flag(
 
 
 def _restart_daemon_if_running(state_dir: Path) -> None:
-    """Stop any live daemon on `state_dir` so the next RPC loads the updated bundle config."""
+    """Stop any live daemon on `state_dir` and wait for endpoint teardown so the next RPC loads updated config."""
+    import time
+
     from diodemcp.engine import EngineClient
     from diodemcp.transport import (
         TransportError,
         default_transport,
+        is_pid_alive,
         read_admin_secret,
     )
 
     cfg = default_transport(state_dir)
-    if not cfg.addr_file.exists() or not cfg.admin_secret_file.exists():
+    sock_path = getattr(cfg, "socket_path", None)
+    has_endpoint = cfg.addr_file.exists() or (
+        sock_path is not None and sock_path.exists()
+    )
+    if not has_endpoint or not cfg.admin_secret_file.exists():
         return
     try:
         secret = read_admin_secret(cfg)
-        EngineClient(cfg, auto_spawn=False).shutdown(admin_secret=secret)
+        res = EngineClient(cfg, auto_spawn=False).shutdown(admin_secret=secret)
     except (TransportError, ValueError, OSError):
-        pass
+        return
+
+    old_pid = res.get("pid") if isinstance(res, dict) else None
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        still_bound = cfg.addr_file.exists() or (
+            sock_path is not None and sock_path.exists()
+        )
+        pid_alive = isinstance(old_pid, int) and is_pid_alive(old_pid)
+        if not still_bound and not pid_alive:
+            break
+        time.sleep(0.01)
 
 
 def _ensure_interactive_tty() -> None:

@@ -1,4 +1,4 @@
-"""Upfront Hugging Face / HTTPS DiodeModelBundle v1 downloader with streaming SHA256 verification."""
+"""Upfront Hugging Face / GitHub Releases / HTTPS DiodeModelBundle v1 downloader with streaming SHA256 verification."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import secrets
 import shutil
+import subprocess
 import sys
 import tempfile
 from typing import Final
@@ -25,9 +26,16 @@ from diodemcp.constants import (
     DEFAULT_STATE_DIR,
 )
 
+GITHUB_RELEASE_FALLBACK_URLS: Final[dict[str, str]] = {
+    "base": "https://github.com/PhilippFrenzel2005/diodemcp/releases/download/models-v2.0-base",
+    "nano": "https://github.com/PhilippFrenzel2005/diodemcp/releases/download/models-v2.0-nano",
+}
+
 MODEL_ALIASES: Final[dict[str, str]] = {
     **DEFAULT_MODEL_REPOS,
     "nano": f"{DEFAULT_HF_NAMESPACE}/diodemcp-nanojev-0.6b-int8",
+    "gh-base": GITHUB_RELEASE_FALLBACK_URLS["base"],
+    "gh-nano": GITHUB_RELEASE_FALLBACK_URLS["nano"],
 }
 
 DEFAULT_HF_ENDPOINT: Final[str] = "https://huggingface.co"
@@ -40,10 +48,46 @@ _HF_REPO_RE = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9._-]{0,95}/[A-Za-z0-9][A-Za-z0-9._-]{0,95}$"
 )
 _REVISION_RE = re.compile(r"^[A-Za-z0-9._/-]{1,128}$")
+_GH_RELEASE_DOWNLOAD_RE = re.compile(
+    r"^https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/releases/download/([^/]+)/([^/?#]+)$"
+)
 
 
 class BundleDownloadError(BundleValidationError):
     """Raised when downloading or verifying a remote DiodeModelBundle v1 fails."""
+
+
+class _HttpStatusDownloadError(BundleDownloadError):
+    """Internal subclass carrying HTTP status code for safe fallback gating."""
+
+    def __init__(self, status_code: int, message: str) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+def _resolve_github_token(*, allow_gh_cli: bool) -> str | None:
+    for env_key in ("DIODEMCP_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"):
+        val = os.environ.get(env_key, "").strip()
+        if val:
+            return val
+    if allow_gh_cli:
+        gh_bin = shutil.which("gh")
+        if gh_bin:
+            try:
+                proc = subprocess.run(
+                    [gh_bin, "auth", "token"],
+                    capture_output=True,
+                    text=True,
+                    timeout=2.0,
+                    check=False,
+                )
+                if proc.returncode == 0 and proc.stdout.strip():
+                    return proc.stdout.strip()
+            except OSError:
+                pass
+            except subprocess.TimeoutExpired:
+                pass
+    return None
 
 
 def _validate_revision(revision: str) -> str:
@@ -72,23 +116,21 @@ def _looks_like_local_path(spec: str) -> bool:
 def _resolve_remote_spec(spec: str, revision: str) -> tuple[str, str]:
     """Return `(base_https_url, cache_slug)` for an alias, `org/repo`, or `https://` URL."""
     rev = _validate_revision(revision)
+    resolved_spec = MODEL_ALIASES.get(spec.lower(), spec)
 
-    if spec.lower() in MODEL_ALIASES:
-        repo_id = MODEL_ALIASES[spec.lower()]
-    elif "://" in spec:
-        parsed = urllib.parse.urlsplit(spec)
+    if "://" in resolved_spec:
+        parsed = urllib.parse.urlsplit(resolved_spec)
         if parsed.scheme.lower() != "https" or not parsed.netloc:
             raise BundleDownloadError(
                 f"Only https:// bundle URLs are allowed, got: {spec!r}"
             )
         if parsed.query or parsed.fragment or ".." in parsed.path.split("/"):
             raise BundleDownloadError(f"Invalid bundle base URL: {spec!r}")
-        base_url = spec.rstrip("/")
+        base_url = resolved_spec.rstrip("/")
         url_hash = hashlib.sha256(base_url.encode("utf-8")).hexdigest()[:16]
         return base_url, f"url--{url_hash}"
-    else:
-        repo_id = spec
 
+    repo_id = resolved_spec
     if not _HF_REPO_RE.match(repo_id) or ".." in repo_id:
         raise BundleDownloadError(
             f"Invalid model alias, Hugging Face repo ID, or path: {spec!r}"
@@ -115,6 +157,44 @@ def _resolve_remote_spec(spec: str, revision: str) -> tuple[str, str]:
     return base_url, slug
 
 
+def _resolve_private_github_asset_url(
+    client: httpx.Client,
+    *,
+    owner: str,
+    repo: str,
+    tag: str,
+    filename: str,
+    gh_token: str,
+    gh_asset_cache: dict[str, dict[str, str]],
+) -> str | None:
+    cache_key = f"{owner}/{repo}@{tag}"
+    if cache_key not in gh_asset_cache:
+        api_url = f"https://api.github.com/repos/{owner}/{repo}/releases/tags/{urllib.parse.quote(tag, safe='')}"
+        resp = client.get(
+            api_url,
+            headers={
+                "Authorization": f"Bearer {gh_token}",
+                "Accept": "application/vnd.github+json",
+            },
+            follow_redirects=False,
+        )
+        if resp.status_code != 200:
+            return None
+        try:
+            payload = resp.json()
+        except ValueError:
+            return None
+        mapping: dict[str, str] = {}
+        for item in payload.get("assets", []):
+            if isinstance(item, dict):
+                name = item.get("name")
+                asset_url = item.get("url")
+                if isinstance(name, str) and isinstance(asset_url, str):
+                    mapping[name] = asset_url
+        gh_asset_cache[cache_key] = mapping
+    return gh_asset_cache[cache_key].get(filename)
+
+
 def _stream_https_file(
     client: httpx.Client,
     url: str,
@@ -124,18 +204,32 @@ def _stream_https_file(
     max_bytes: int,
     expected_sha256: str | None = None,
     progress: bool = False,
+    initial_headers: dict[str, str] | None = None,
+    gh_token: str | None = None,
+    gh_asset_cache: dict[str, dict[str, str]] | None = None,
 ) -> str:
     """Stream an HTTPS resource with strict HTTPS-only redirect validation and SHA256 hashing."""
     current_url = url
-    for _hop in range(_MAX_REDIRECTS + 1):
+    initial_host = urllib.parse.urlsplit(url).netloc.lower()
+
+    for hop in range(_MAX_REDIRECTS + 1):
         parsed_curr = urllib.parse.urlsplit(current_url)
         if parsed_curr.scheme.lower() != "https" or not parsed_curr.netloc:
             raise BundleDownloadError(
                 f"Refusing non-HTTPS download or redirect target for {label}: {current_url!r}"
             )
 
+        # Strip origin-specific auth headers when redirected to external storage (e.g. S3 signed URLs)
+        hop_headers = (
+            initial_headers
+            if initial_headers and parsed_curr.netloc.lower() == initial_host
+            else None
+        )
+
         try:
-            with client.stream("GET", current_url, follow_redirects=False) as response:
+            with client.stream(
+                "GET", current_url, headers=hop_headers, follow_redirects=False
+            ) as response:
                 if response.status_code in (301, 302, 303, 307, 308):
                     location = response.headers.get("Location")
                     if not location:
@@ -145,9 +239,41 @@ def _stream_https_file(
                     current_url = urllib.parse.urljoin(current_url, location)
                     continue
 
+                if response.status_code == 404 and hop == 0 and gh_token:
+                    gh_match = _GH_RELEASE_DOWNLOAD_RE.match(current_url)
+                    if gh_match is not None:
+                        owner, repo, tag, fname = gh_match.groups()
+                        cache = gh_asset_cache if gh_asset_cache is not None else {}
+                        asset_api_url = _resolve_private_github_asset_url(
+                            client,
+                            owner=owner,
+                            repo=repo,
+                            tag=tag,
+                            filename=fname,
+                            gh_token=gh_token,
+                            gh_asset_cache=cache,
+                        )
+                        if asset_api_url:
+                            return _stream_https_file(
+                                client,
+                                asset_api_url,
+                                dest_path,
+                                label=label,
+                                max_bytes=max_bytes,
+                                expected_sha256=expected_sha256,
+                                progress=progress,
+                                initial_headers={
+                                    "Authorization": f"Bearer {gh_token}",
+                                    "Accept": "application/octet-stream",
+                                },
+                                gh_token=None,
+                                gh_asset_cache=cache,
+                            )
+
                 if response.status_code != 200:
-                    raise BundleDownloadError(
-                        f"HTTP {response.status_code} while downloading {label} from {current_url}"
+                    raise _HttpStatusDownloadError(
+                        response.status_code,
+                        f"HTTP {response.status_code} while downloading {label} from {current_url}",
                     )
 
                 content_length_hdr = response.headers.get("Content-Length")
@@ -269,25 +395,53 @@ def download_and_verify_bundle(
             if client is None
             else client
         )
+        gh_token = _resolve_github_token(allow_gh_cli=owns_client)
+        gh_asset_cache: dict[str, dict[str, str]] = {}
 
         try:
             manifest_path = staging_dir / "manifest.json"
-            _stream_https_file(
-                active_client,
-                f"{base_url}/manifest.json",
-                manifest_path,
-                label="manifest.json",
-                max_bytes=min(max_file_bytes, _MAX_MANIFEST_BYTES),
-                expected_sha256=None,
-                progress=progress,
-            )
+            active_base_url = base_url
+            try:
+                _stream_https_file(
+                    active_client,
+                    f"{active_base_url}/manifest.json",
+                    manifest_path,
+                    label="manifest.json",
+                    max_bytes=min(max_file_bytes, _MAX_MANIFEST_BYTES),
+                    expected_sha256=None,
+                    progress=progress,
+                    gh_token=gh_token,
+                    gh_asset_cache=gh_asset_cache,
+                )
+            except _HttpStatusDownloadError as exc:
+                fallback_url = GITHUB_RELEASE_FALLBACK_URLS.get(raw_spec.lower())
+                if (
+                    exc.status_code == 404
+                    and fallback_url is not None
+                    and revision.strip() == "main"
+                    and active_base_url != fallback_url
+                ):
+                    active_base_url = fallback_url
+                    _stream_https_file(
+                        active_client,
+                        f"{active_base_url}/manifest.json",
+                        manifest_path,
+                        label="manifest.json",
+                        max_bytes=min(max_file_bytes, _MAX_MANIFEST_BYTES),
+                        expected_sha256=None,
+                        progress=progress,
+                        gh_token=gh_token,
+                        gh_asset_cache=gh_asset_cache,
+                    )
+                else:
+                    raise
 
             try:
                 raw_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                 manifest = BundleManifest.model_validate(raw_manifest)
             except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValidationError) as exc:
                 raise BundleDownloadError(
-                    f"Invalid remote manifest.json from {base_url}: {exc}"
+                    f"Invalid remote manifest.json from {active_base_url}: {exc}"
                 ) from exc
 
             artifact_specs = (
@@ -298,12 +452,14 @@ def download_and_verify_bundle(
             for filename, expected_sha in artifact_specs:
                 _stream_https_file(
                     active_client,
-                    f"{base_url}/{filename}",
+                    f"{active_base_url}/{filename}",
                     staging_dir / filename,
                     label=filename,
                     max_bytes=max_file_bytes,
                     expected_sha256=expected_sha,
                     progress=progress,
+                    gh_token=gh_token,
+                    gh_asset_cache=gh_asset_cache,
                 )
 
             # Full structural + SHA256 + tokenizer special-token cross-check BEFORE promotion
