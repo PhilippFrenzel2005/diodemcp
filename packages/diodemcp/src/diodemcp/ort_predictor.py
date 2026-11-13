@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 import json
+import math
 from pathlib import Path
 import threading
 from typing import Any
@@ -52,6 +53,82 @@ def _extract_valid_prob_row(raw_tensor: Any, expected_cols: int) -> np.ndarray |
     return np.clip(row, 0.0, 1.0)
 
 
+def _align_head_prob(
+    prob: float,
+    head_warn: float,
+    head_crit: float,
+    manifest_warn: float,
+    manifest_crit: float,
+) -> float:
+    """Piecewise-linearly align a neural head probability from `(head_warn, head_crit)` to `(manifest_warn, manifest_crit)`."""
+    if head_warn == manifest_warn and head_crit == manifest_crit:
+        return prob
+    if prob <= 0.0:
+        return 0.0
+    if prob >= 1.0:
+        return 1.0
+    if prob < head_warn:
+        val = (prob / head_warn) * manifest_warn
+    elif prob < head_crit:
+        val = manifest_warn + ((prob - head_warn) / (head_crit - head_warn)) * (
+            manifest_crit - manifest_warn
+        )
+    else:
+        val = manifest_crit + ((prob - head_crit) / (1.0 - head_crit)) * (
+            1.0 - manifest_crit
+        )
+    return float(min(1.0, max(0.0, val)))
+
+
+def _resolve_per_head_thresholds(
+    calibration: Mapping[str, Any],
+    manifest_warn: float,
+    manifest_crit: float,
+) -> dict[str, tuple[float, float]]:
+    """Extract validated `(warn_min, critical_min)` per head from `calibration.json`."""
+    resolved: dict[str, tuple[float, float]] = {
+        "enc": (manifest_warn, manifest_crit),
+        "sem": (manifest_warn, manifest_crit),
+        "hijack": (manifest_warn, manifest_crit),
+    }
+    pht = calibration.get("per_head_thresholds")
+    if not isinstance(pht, Mapping):
+        return resolved
+
+    diag = calibration.get("post_int8_val_diagnostics")
+    zero_val_warn = (
+        isinstance(diag, Mapping) and diag.get("overall_benign_fpr_at_warn") == 0.0
+    )
+    zero_val_crit = (
+        isinstance(diag, Mapping) and diag.get("overall_benign_fpr_at_critical") == 0.0
+    )
+
+    for head in ("enc", "sem", "hijack"):
+        entry = pht.get(head)
+        if not isinstance(entry, Mapping):
+            continue
+        raw_w = entry.get("warn_min")
+        raw_c = entry.get("critical_min")
+        if (
+            isinstance(raw_w, bool)
+            or isinstance(raw_c, bool)
+            or not isinstance(raw_w, (int, float))
+            or not isinstance(raw_c, (int, float))
+        ):
+            continue
+        w = float(raw_w)
+        c = float(raw_c)
+        if not (math.isfinite(w) and math.isfinite(c) and 0.0 < w < c < 1.0):
+            continue
+        eff_w = manifest_warn if zero_val_warn else w
+        eff_c = manifest_crit if zero_val_crit else c
+        if 0.0 < eff_w < eff_c < 1.0:
+            resolved[head] = (eff_w, eff_c)
+
+    return resolved
+
+
+
 class OrtJevPredictor:
     """Zero-PyTorch CPU ONNX Runtime predictor implementing `PredictorProtocol` (`R5`, `R6`)."""
 
@@ -74,6 +151,17 @@ class OrtJevPredictor:
         )
         self.calibration: dict[str, Any] = json.loads(
             (self.bundle_dir / "calibration.json").read_text(encoding="utf-8")
+        )
+        self._manifest_warn_min: float = float(self.manifest.thresholds["warn_min"])
+        self._manifest_critical_min: float = float(
+            self.manifest.thresholds["critical_min"]
+        )
+        self.per_head_thresholds: dict[str, tuple[float, float]] = (
+            _resolve_per_head_thresholds(
+                self.calibration,
+                self._manifest_warn_min,
+                self._manifest_critical_min,
+            )
         )
         self.tokenizer: Tokenizer = Tokenizer.from_file(
             str(self.bundle_dir / "tokenizer.json")
@@ -135,7 +223,34 @@ class OrtJevPredictor:
         if noul_row is None or src_row is None or arg_row is None:
             return 1.0, 1.0, 1.0, None, None
 
-        return float(noul_row[0]), float(noul_row[1]), float(noul_row[2]), src_row, arg_row
+        enc_w, enc_c = self.per_head_thresholds["enc"]
+        sem_w, sem_c = self.per_head_thresholds["sem"]
+        hij_w, hij_c = self.per_head_thresholds["hijack"]
+        return (
+            _align_head_prob(
+                float(noul_row[0]),
+                enc_w,
+                enc_c,
+                self._manifest_warn_min,
+                self._manifest_critical_min,
+            ),
+            _align_head_prob(
+                float(noul_row[1]),
+                sem_w,
+                sem_c,
+                self._manifest_warn_min,
+                self._manifest_critical_min,
+            ),
+            _align_head_prob(
+                float(noul_row[2]),
+                hij_w,
+                hij_c,
+                self._manifest_warn_min,
+                self._manifest_critical_min,
+            ),
+            src_row,
+            arg_row,
+        )
 
     def _decode_model_attribution(
         self,
