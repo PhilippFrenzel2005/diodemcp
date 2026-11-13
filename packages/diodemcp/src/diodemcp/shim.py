@@ -1188,7 +1188,12 @@ class _McpShimCore:
             is_poisoned = _TOOL_POISONING_RE.search(normalized_combined) is not None
 
             if is_poisoned or is_rug_pull:
-                tag = "rug_pull" if is_rug_pull else f"poisoned_{kind}"
+                if is_poisoned and is_rug_pull:
+                    tag = f"rug_pull_poisoned_{kind}"
+                elif is_rug_pull:
+                    tag = "rug_pull"
+                else:
+                    tag = f"poisoned_{kind}"
                 suspicious_entries.append(
                     f"[{self.server_name}:{item_name}:{tag}] {normalized_combined}".strip()
                 )

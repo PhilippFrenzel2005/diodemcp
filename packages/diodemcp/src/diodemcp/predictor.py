@@ -47,7 +47,7 @@ _KNOWN_SECRET_RE = re.compile(
     r")"
 )
 _KV_ASSIGN_RE = re.compile(
-    r"""([A-Za-z0-9_.-]{2,64})\s*[:=]\s*["']?([^\s"'#;,]{8,})["']?"""
+    r"""["']?([A-Za-z0-9_.-]{2,64})["']?\s*[:=]\s*["']?([^\s"'#;,{}[\]]{8,})["']?"""
 )
 _URI_PASSWORD_RE = re.compile(r"://[^:/@\s]+:([^@\s]{6,})@")
 _HIGH_ENTROPY_TOKEN_RE = re.compile(r"[A-Za-z0-9+/_=-]{16,}")
@@ -492,7 +492,17 @@ def _compute_span_features(span: TaintSpan) -> _SpanFeatures:
         key_lower = match.group(1).lower()
         val = match.group(2)
         if any(word in key_lower for word in _SENSITIVE_KEY_WORDS):
-            if val.lower() not in {"true", "false", "null", "none", "production", "development"}:
+            val_l = val.lower()
+            if val_l not in {
+                "true",
+                "false",
+                "null",
+                "none",
+                "production",
+                "development",
+            } and not val_l.startswith(
+                ("replace_with_", "example_only", "your_", "changeme", "<your")
+            ):
                 _push_sec(val)
     if "PRIVATE KEY-----" in norm_text:
         for line in norm_text.splitlines():
@@ -649,6 +659,12 @@ def _detect_code_or_data_copy(
                 best_score, best_obf = score, is_obf
             continue
 
+        if is_high_secret and len(matched_lines) == 1 and len(matched_lines[0]) >= 15:
+            score = 0.92
+            if score > best_score:
+                best_score, best_obf = score, is_obf
+            continue
+
         if len(matched_lines) == 1 and len(matched_lines[0]) >= 26:
             if _CODE_LINE_HINT_RE.search(matched_lines[0]):
                 score = 0.88 if is_obf else 0.85
@@ -789,13 +805,21 @@ def _detect_arg_provenance_hijack(
 class Tier0DeterministicPredictor:
     """Zero-ML deterministic fallback predictor covering T1-T7 exfiltration and sabotage."""
 
+    def __init__(self, *, hard_secrets_only: bool = False) -> None:
+        self.hard_secrets_only = hard_secrets_only
+
     def evaluate_with_reasons(
         self,
         intent: str | None,
         private_spans: list[TaintSpan],
         untrusted_spans: list[TaintSpan],
         call: CandidateCall,
+        *,
+        hard_secrets_only: bool | None = None,
     ) -> tuple[DecisionScores, tuple[str, ...]]:
+        effective_hard_only = (
+            self.hard_secrets_only if hard_secrets_only is None else hard_secrets_only
+        )
         missing_intent = _is_missing_intent(intent)
         clean_intent = "" if missing_intent or intent is None else intent.strip()
 
@@ -853,6 +877,12 @@ class Tier0DeterministicPredictor:
                     feat=feat,
                 )
                 if copy_score > 0.0:
+                    if (
+                        effective_hard_only
+                        and not missing_intent
+                        and not (is_high_secret_span or copy_obf)
+                    ):
+                        continue
                     if is_high_secret_span or copy_obf:
                         score = max(copy_score, 0.92)
                     elif is_routing_key and copy_score <= 0.55:
@@ -903,6 +933,8 @@ class Tier0DeterministicPredictor:
             has_mutation_verb = bool(_MUTATION_INTENT_VERB_RE.search(clean_intent))
             for arg_key, forward_views in arg_forward_views_map.items():
                 for view_text, is_obf in forward_views:
+                    if effective_hard_only and not is_obf:
+                        continue
                     for pattern, _label in _SABOTAGE_PATTERNS:
                         for match in pattern.finditer(view_text):
                             matched_fragment = " ".join(
@@ -920,17 +952,18 @@ class Tier0DeterministicPredictor:
                                 best_p_hijack = 0.92
                                 hijack_arg_key = arg_key
 
-            prov_score, prov_arg_key = _detect_arg_provenance_hijack(
-                clean_intent,
-                private_spans,
-                untrusted_spans,
-                arg_forward_views_map,
-            )
-            if prov_score > 0.0:
-                reasons.append("arg_provenance_untrusted")
-                if prov_score > best_p_hijack:
-                    best_p_hijack = prov_score
-                    hijack_arg_key = prov_arg_key
+            if not effective_hard_only:
+                prov_score, prov_arg_key = _detect_arg_provenance_hijack(
+                    clean_intent,
+                    private_spans,
+                    untrusted_spans,
+                    arg_forward_views_map,
+                )
+                if prov_score > 0.0:
+                    reasons.append("arg_provenance_untrusted")
+                    if prov_score > best_p_hijack:
+                        best_p_hijack = prov_score
+                        hijack_arg_key = prov_arg_key
 
         attributed_span_idx: int | None = None
         attributed_span_id: str | None = None
@@ -960,8 +993,14 @@ class Tier0DeterministicPredictor:
         private_spans: list[TaintSpan],
         untrusted_spans: list[TaintSpan],
         call: CandidateCall,
+        *,
+        hard_secrets_only: bool | None = None,
     ) -> DecisionScores:
         scores, _reasons = self.evaluate_with_reasons(
-            intent, private_spans, untrusted_spans, call
+            intent,
+            private_spans,
+            untrusted_spans,
+            call,
+            hard_secrets_only=hard_secrets_only,
         )
         return scores

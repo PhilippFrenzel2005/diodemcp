@@ -10,5 +10,6 @@ build/
 node_modules/
 .worktrees/
 .superpowers/
+/bundles/
 *.onnx
 !tests/**/*.onnx

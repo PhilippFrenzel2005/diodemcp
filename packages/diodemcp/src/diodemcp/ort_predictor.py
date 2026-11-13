@@ -79,7 +79,9 @@ class OrtJevPredictor:
             str(self.bundle_dir / "tokenizer.json")
         )
         self.packer: JevWindowPacker = JevWindowPacker(self.tokenizer, self.manifest)
-        self.tier0: Tier0DeterministicPredictor = Tier0DeterministicPredictor()
+        self.tier0: Tier0DeterministicPredictor = Tier0DeterministicPredictor(
+            hard_secrets_only=True
+        )
         self._infer_lock = threading.Lock()
 
         sess_options = ort.SessionOptions()

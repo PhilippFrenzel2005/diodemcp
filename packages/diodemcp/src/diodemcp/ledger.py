@@ -1232,6 +1232,7 @@ class SessionLedger:
         call_cwd: Path | str | None = None,
         include_private_reads_for_outbound: bool = False,
         is_high_secret_path_fn: Callable[[str], bool] | None = None,
+        is_shell_call: bool = False,
     ) -> tuple[set[str], bool, bool]:
         """Return `(matched_span_ids, matched_high_secret_path, matched_untrusted_path)` scoped to touched paths."""
         bases: list[Path | None] = []
@@ -1289,7 +1290,7 @@ class SessionLedger:
                             if sc and is_high_secret_path_fn(sc.casefold()):
                                 inline_hs_targets.add(dst_canon.casefold())
 
-        def _check_token(raw_tok: str) -> None:
+        def _check_token(raw_tok: str, *, allow_private_read_lookup: bool = True) -> None:
             nonlocal matched_hs_path, matched_untrusted_path
             candidates = [raw_tok.strip().lstrip("@")]
             if "=" in candidates[0]:
@@ -1297,6 +1298,7 @@ class SessionLedger:
                 if rhs:
                     candidates.append(rhs)
 
+            check_priv_reads = include_private_reads_for_outbound and allow_private_read_lookup
             for cleaned in candidates:
                 if not cleaned or cleaned.startswith(("http://", "https://")):
                     continue
@@ -1310,12 +1312,12 @@ class SessionLedger:
                     cf = canon.casefold()
                     if any(utp.casefold() == cf for utp in self._untrusted_tainted_paths):
                         matched_untrusted_path = True
-                    if include_private_reads_for_outbound:
+                    if check_priv_reads:
                         if cf in inline_hs_targets:
                             matched_hs_path = True
                         if is_high_secret_path_fn is not None and is_high_secret_path_fn(cf):
                             matched_hs_path = True
-                if include_private_reads_for_outbound:
+                if check_priv_reads:
                     matched_ids.update(
                         self._matched_ids_in_path_map(cleaned, self._private_read_paths, bases)
                     )
@@ -1329,7 +1331,7 @@ class SessionLedger:
                 continue
             leaf_key = flat_k.rsplit(".", 1)[-1].split("[", 1)[0].lower()
             if leaf_key in _PATH_HINT_KEYS:
-                _check_token(val)
+                _check_token(val, allow_private_read_lookup=True)
 
             if self._tainted_paths and _REPO_WIDE_PUBLISH_CMD_RE.search(val) is not None:
                 matched_ids.update(_repo_tainted_sids())
@@ -1341,7 +1343,7 @@ class SessionLedger:
                 if set(tok_clean) <= {".", "/", "\\"}:
                     continue
                 if "/" in tok_clean or "\\" in tok_clean or "." in tok_clean:
-                    _check_token(tok_clean)
+                    _check_token(tok_clean, allow_private_read_lookup=is_shell_call)
 
         return matched_ids, matched_hs_path, matched_untrusted_path
 
