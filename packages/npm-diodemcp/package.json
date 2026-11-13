@@ -1,0 +1,20 @@
+{
+  "name": "diodemcp",
+  "version": "0.1.0",
+  "description": "Zero-dependency npx launcher for DiodeMCP local taint-tracking firewall and Jev cross-encoder runtime for MCP servers and coding agents",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "diodemcp": "./bin/diodemcp.mjs"
+  },
+  "files": [
+    "bin/",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
