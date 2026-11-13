@@ -1438,7 +1438,8 @@ def test_hub_falls_back_to_github_releases_on_hf_404_and_supports_private_token_
     def _private_gh_handler(request: httpx.Request) -> httpx.Response:
         url = str(request.url)
         if "huggingface.co" in url:
-            return httpx.Response(404, text="Not Found")
+            # Hugging Face Hub returns HTTP 401 RepoNotFound for unauthenticated requests to missing repos
+            return httpx.Response(401, text="Repository Not Found")
         if url.startswith("https://github.com/PhilippFrenzel2005/diodemcp/releases/download/"):
             return httpx.Response(404, text="Private repo requires API asset endpoint")
         if url == "https://api.github.com/repos/PhilippFrenzel2005/diodemcp/releases/tags/models-v2.0-nano":

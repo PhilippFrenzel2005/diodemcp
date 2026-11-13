@@ -416,7 +416,7 @@ def download_and_verify_bundle(
             except _HttpStatusDownloadError as exc:
                 fallback_url = GITHUB_RELEASE_FALLBACK_URLS.get(raw_spec.lower())
                 if (
-                    exc.status_code == 404
+                    exc.status_code in (401, 404)
                     and fallback_url is not None
                     and revision.strip() == "main"
                     and active_base_url != fallback_url
