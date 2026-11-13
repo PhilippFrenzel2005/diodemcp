@@ -988,6 +988,17 @@ def _validate_string_list(section: dict[str, Any], key: str, section_name: str) 
     return val
 
 
+_NON_SECRET_ENV_TEMPLATE_BASENAMES: frozenset[str] = frozenset(
+    {
+        ".env.example",
+        ".env.sample",
+        ".env.template",
+        ".env.dist",
+        ".env.schema",
+    }
+)
+
+
 @dataclass
 class _DomainMatcher:
     path_patterns: list[re.Pattern[str]] = field(default_factory=list)
@@ -1061,6 +1072,9 @@ class _DomainMatcher:
         return any(rx.search(folded_canon_path) is not None for rx in self.path_patterns)
 
     def matches_high_secret_path(self, folded_canon_path: str) -> bool:
+        base = posixpath.basename(folded_canon_path.rstrip("/"))
+        if base in _NON_SECRET_ENV_TEMPLATE_BASENAMES:
+            return False
         return any(
             rx.search(folded_canon_path) is not None for rx in self.high_secret_path_patterns
         )
@@ -1307,6 +1321,20 @@ class CapabilityRegistry:
             return False
         return norm_tool in _LOCAL_FILE_WRITE_TOOLS
 
+    def _is_sql_db_call(
+        self,
+        norm_server: str,
+        norm_tool: str,
+        args: dict[str, Any] | None = None,
+    ) -> bool:
+        if norm_server in self._db_servers:
+            return True
+        if norm_tool in (self._db_read_tools | self._db_mutating_tools) and isinstance(
+            args, dict
+        ):
+            return bool(_extract_keyed_strings(args, _SQL_ARG_KEYS))
+        return False
+
     def _is_explicitly_registered_tool(
         self,
         norm_server: str,
@@ -1318,7 +1346,7 @@ class CapabilityRegistry:
             or self._is_shell_call(norm_server, norm_tool)
             or self._is_file_read_call(norm_server, norm_tool, args)
             or self._is_file_write_call(norm_server, norm_tool, args)
-            or norm_server in self._db_servers
+            or self._is_sql_db_call(norm_server, norm_tool, args)
             or self._external_sinks.matches_server_or_tool(norm_server, norm_tool)
             or self._sensitive_mutations.matches_server_or_tool(norm_server, norm_tool)
             or self._dual_direction.matches_server_or_tool(norm_server, norm_tool)
@@ -1354,7 +1382,7 @@ class CapabilityRegistry:
             return True
         if self._is_file_write_call(norm_server, norm_tool, args):
             return True
-        if norm_server in self._db_servers and (
+        if self._is_sql_db_call(norm_server, norm_tool, args) and (
             norm_tool in self._db_read_tools or norm_tool in self._db_mutating_tools
         ):
             return True
@@ -1460,7 +1488,7 @@ class CapabilityRegistry:
             flags |= CapabilityFlag.MUTATES_SENSITIVE
 
         # T5: Database mutating SQL queries vs read-only SELECT queries.
-        if norm_server in self._db_servers:
+        if self._is_sql_db_call(norm_server, norm_tool, args):
             if norm_tool in self._db_mutating_tools:
                 flags |= CapabilityFlag.MUTATES_SENSITIVE
             for sql in _extract_keyed_strings(args, _SQL_ARG_KEYS):
@@ -1572,7 +1600,7 @@ class CapabilityRegistry:
             flags |= CapabilityFlag.READS_PRIVATE | CapabilityFlag.READS_UNTRUSTED
 
         # T3: Database SELECT / RETURNING / read queries ingest private data on response.
-        if norm_server in self._db_servers:
+        if self._is_sql_db_call(norm_server, norm_tool, args):
             sql_list = _extract_keyed_strings(args, _SQL_ARG_KEYS)
             if sql_list:
                 for sql in sql_list:

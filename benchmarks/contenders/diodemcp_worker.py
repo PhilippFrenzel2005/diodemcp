@@ -136,7 +136,12 @@ def _screen_catalog(
         normalized_combined = _normalize_for_screening(raw_combined)
         is_poisoned = _TOOL_POISONING_RE.search(normalized_combined) is not None
         if is_poisoned or is_rug_pull:
-            tag = "rug_pull" if is_rug_pull else "poisoned_tool"
+            if is_poisoned and is_rug_pull:
+                tag = "rug_pull_poisoned_tool"
+            elif is_rug_pull:
+                tag = "rug_pull"
+            else:
+                tag = "poisoned_tool"
             suspicious_by_server.setdefault(td.server, []).append(
                 f"[{td.server}:{td.name}:{tag}] {normalized_combined}".strip()
             )

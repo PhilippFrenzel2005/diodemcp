@@ -917,6 +917,7 @@ class DiodeEngineServer:
                 private_spans=private_spans,
                 untrusted_spans=untrusted_spans,
                 call=synth_call,
+                hard_secrets_only=isinstance(self._predictor, OrtJevPredictor),
             )
             best = res if best is None else _merge_floor_scores(best, res)
         return best
@@ -933,11 +934,13 @@ class DiodeEngineServer:
         call_cwd: Path,
         writes_external: bool,
     ) -> DecisionScores | None:
+        norm_srv, norm_tool = _normalize_server_and_tool(call.server, call.tool)
         matched_ids, matched_hs_path, matched_untrusted_path = ledger.matched_tainted_span_ids_for_call(
             call,
             call_cwd=call_cwd,
             include_private_reads_for_outbound=writes_external,
             is_high_secret_path_fn=registry._private_sources.matches_high_secret_path,
+            is_shell_call=registry._is_shell_call(norm_srv, norm_tool),
         )
         if not matched_ids and not matched_hs_path and not matched_untrusted_path:
             return None
@@ -1204,6 +1207,7 @@ class DiodeEngineServer:
                 call_cwd=call_cwd,
                 include_private_reads_for_outbound=writes_ext,
                 is_high_secret_path_fn=registry._private_sources.matches_high_secret_path,
+                is_shell_call=registry._is_shell_call(norm_srv, norm_tool),
             )
             touches_tainted_write = bool(
                 matched_tainted_ids or matched_hs_path or matched_untrusted_path
@@ -1401,6 +1405,7 @@ class DiodeEngineServer:
                     private_spans=priv_list,
                     untrusted_spans=untrust_list,
                     call=call,
+                    hard_secrets_only=isinstance(self._predictor, OrtJevPredictor),
                 )
                 scores = _merge_floor_scores(scores, t0_latest)
                 tier0_floor_max = max(tier0_floor_max, t0_latest.p_max)

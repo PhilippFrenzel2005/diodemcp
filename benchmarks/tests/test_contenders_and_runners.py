@@ -157,7 +157,11 @@ def test_diodemcp_worker_isolates_traces_and_blocks_v3_poisoned_sink() -> None:
 
     # Trace 4: Subprocess IPC ping / eval_trace / shutdown check (clean JSONL stdout).
     env = os.environ.copy()
-    env["PYTHONPATH"] = str(REPO_ROOT)
+    existing_py_path = env.get("PYTHONPATH", "")
+    path_parts = [str(REPO_ROOT), str(REPO_ROOT / "packages" / "diodemcp" / "src")]
+    if existing_py_path:
+        path_parts.append(existing_py_path)
+    env["PYTHONPATH"] = os.pathsep.join(path_parts)
     proc = subprocess.Popen(
         [
             sys.executable,
@@ -427,7 +431,11 @@ def test_cisco_scanner_worker_modes_and_severity_mapping() -> None:
 def test_competitor_stdio_proxy_survives_noisy_child_stdout_and_blocks_secret() -> None:
     """Verify competitor_stdio_proxy strips noisy child stdout lines and blocks AWS key exfil."""
     env = os.environ.copy()
-    env["PYTHONPATH"] = str(REPO_ROOT)
+    existing_py_path = env.get("PYTHONPATH", "")
+    path_parts = [str(REPO_ROOT), str(REPO_ROOT / "packages" / "diodemcp" / "src")]
+    if existing_py_path:
+        path_parts.append(existing_py_path)
+    env["PYTHONPATH"] = os.pathsep.join(path_parts)
 
     proc = subprocess.Popen(
         [
