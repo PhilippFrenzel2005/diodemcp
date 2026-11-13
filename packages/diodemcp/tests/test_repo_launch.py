@@ -2,15 +2,30 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 import shutil
 import subprocess
 import tomllib
+import xml.etree.ElementTree as ET
 import zipfile
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+EXPECTED_SVGS = (
+    ".github/assets/hero-dark.svg",
+    ".github/assets/hero-light.svg",
+    ".github/assets/benchmark-dark.svg",
+    ".github/assets/benchmark-light.svg",
+    ".github/assets/plot-roc-pareto-dark.svg",
+    ".github/assets/plot-roc-pareto-light.svg",
+    ".github/assets/plot-vector-heatmap-dark.svg",
+    ".github/assets/plot-vector-heatmap-light.svg",
+    ".github/assets/plot-live-wire-dark.svg",
+    ".github/assets/plot-live-wire-light.svg",
+    ".github/assets/terminal-demo.svg",
+)
 
 
 def test_root_pyproject_matches_zero_pytorch_contract_and_builds_wheel(
@@ -49,3 +64,52 @@ def test_root_pyproject_matches_zero_pytorch_contract_and_builds_wheel(
         assert "diodemcp/cli.py" in names
         assert "diodemcp/ort_predictor.py" in names
         assert "diodemcp/registry_data.toml" in names
+
+
+def test_github_svg_assets_are_valid_xml_and_sanitizer_safe() -> None:
+    for rel_path in EXPECTED_SVGS:
+        svg_path = REPO_ROOT / rel_path
+        assert svg_path.is_file(), f"Missing SVG asset: {rel_path}"
+        tree = ET.parse(svg_path)
+        root = tree.getroot()
+        assert root.tag.endswith("svg"), f"Root tag is not <svg> in {rel_path}"
+        assert "viewBox" in root.attrib, f"Missing viewBox on {rel_path}"
+        for elem in root.iter():
+            local_tag = elem.tag.split("}", 1)[-1].lower()
+            assert local_tag not in {"script", "foreignobject"}, (
+                f"GitHub-stripped tag <{local_tag}> found in {rel_path}"
+            )
+
+
+def test_readme_links_community_files_and_ci_workflow_are_complete() -> None:
+    readme = REPO_ROOT / "README.md"
+    assert readme.is_file()
+    text = readme.read_text(encoding="utf-8")
+    assert len(text.splitlines()) >= 140, "README.md should be a complete flagship repo landing page"
+    assert "uv tool install" in text
+    assert "<picture>" in text
+
+    for req_file in ("CONTRIBUTING.md", "SECURITY.md", ".github/workflows/ci.yml"):
+        fpath = REPO_ROOT / req_file
+        assert fpath.is_file() and fpath.stat().st_size > 200, f"Missing or stub {req_file}"
+
+    # Verify all relative links/assets in README.md resolve inside REPO_ROOT
+    candidates: list[str] = []
+    for match in re.finditer(r'(?:src|srcset|href)="([^"]+)"', text):
+        candidates.append(match.group(1))
+    for match in re.finditer(r"\]\(([^)]+)\)", text):
+        candidates.append(match.group(1))
+
+    for raw_ref in candidates:
+        ref = raw_ref.strip().split()[0]
+        if (
+            not ref
+            or ref.startswith(("#", "http://", "https://", "mailto:"))
+        ):
+            continue
+        clean_ref = ref.split("#", 1)[0].split("?", 1)[0]
+        if not clean_ref:
+            continue
+        target = (REPO_ROOT / clean_ref).resolve()
+        assert target.exists(), f"Broken relative link/asset in README.md: {raw_ref!r}"
+

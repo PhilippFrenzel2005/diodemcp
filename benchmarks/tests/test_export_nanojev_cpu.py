@@ -6,7 +6,10 @@ import json
 from pathlib import Path
 
 import onnx
-import torch
+import pytest
+
+torch = pytest.importorskip("torch")
+pytest.importorskip("diodemodel")
 from diodemcp.bundle import REQUIRED_BUNDLE_FILES, validate_bundle_dir
 from diodemodel.export_bundle import (
     build_smoke_jev_tokenizer,
