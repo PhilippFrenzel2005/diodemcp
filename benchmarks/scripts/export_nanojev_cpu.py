@@ -15,6 +15,7 @@ from typing import Any, Final
 import onnx
 from onnxruntime.quantization import QuantType, quantize_dynamic
 from onnxruntime.quantization.quant_utils import add_pre_process_metadata
+import numpy as np
 from tokenizers import Tokenizer
 import torch
 
@@ -33,12 +34,15 @@ from diodemodel.export_bundle import (
     QUANTIZE_OP_TYPES,
     _compute_fp32_int8_band_flip_rate,
     _materialize_bundle_tokenizer,
+    bake_onnx_logit_temperatures,
     calibrate_int8_onnx_temperatures,
     collect_excluded_onnx_nodes,
     export_fp32_onnx,
+    fit_data_thresholds,
     verify_onnx_no_bool_where,
 )
-from diodemodel.modeling_jev import ARG_SLOTS, SRC_SLOTS, pin_onnx_output_shapes
+from diodemodel.losses_rlcd import temperature_calibration_report
+from diodemodel.modeling_jev import ARG_SLOTS, NUM_NOUL_HEADS, SRC_SLOTS, pin_onnx_output_shapes
 from diodemodel.train import (
     _instantiate_model_from_checkpoint_payload,
     load_checkpoint,
@@ -196,6 +200,68 @@ def _quantize_fp32_to_single_int8(
     return quant_info, extra_excluded
 
 
+def _apply_min_temperature_floor(
+    int8_onnx_path: Path | str,
+    cal_res: dict[str, Any],
+    *,
+    min_temp: float,
+) -> dict[str, Any]:
+    """Clamp post-INT8 temperatures at ``min_temp``, re-bake ONNX weights, and refresh metrics."""
+    payload = dict(cal_res["calibration_payload"])
+    payload["min_temp"] = float(min_temp)
+    fitted_temps: torch.Tensor = cal_res["fitted_temperatures"]
+
+    if min_temp > 0.0 and bool((fitted_temps < float(min_temp)).any()):
+        clamped_temps = torch.clamp(fitted_temps, min=float(min_temp))
+        bake_onnx_logit_temperatures(int8_onnx_path, clamped_temps)
+
+        int8_raw_logits: torch.Tensor = cal_res["int8_raw_logits"]
+        val_targets: torch.Tensor = cal_res["val_targets"]
+        calib_rep = temperature_calibration_report(
+            int8_raw_logits,
+            val_targets,
+            clamped_temps,
+            num_bins=int(payload["num_bins"]),
+        )
+        y_f64 = val_targets.double()
+        p_calibrated = torch.sigmoid(int8_raw_logits.double() / clamped_temps.double())
+        brier_after = [
+            float(((p_calibrated[:, h] - y_f64[:, h]) ** 2).mean().item())
+            for h in range(NUM_NOUL_HEADS)
+        ]
+        fitted_thresh_info = fit_data_thresholds(p_calibrated, val_targets)
+        fitted_pair = {
+            "warn_min": fitted_thresh_info["warn_min"],
+            "critical_min": fitted_thresh_info["critical_min"],
+        }
+        t_list = [float(x) for x in clamped_temps.detach().cpu().tolist()]
+        payload["unclamped_temperatures"] = list(payload["temperatures"])
+        payload["temperatures"] = t_list
+        payload["temperatures_by_head"] = {
+            "T_enc": t_list[0],
+            "T_sem": t_list[1],
+            "T_hijack": t_list[2],
+        }
+        payload["ece_before"] = [float(x) for x in calib_rep["ece_before"]]
+        payload["ece_after"] = [float(x) for x in calib_rep["ece_after"]]
+        payload["ece_val"] = float(calib_rep["ece_val"])
+        payload["brier_after"] = brier_after
+        payload["brier_val"] = float(np.mean(brier_after))
+        payload["nll_after"] = [float(x) for x in calib_rep["nll_after"]]
+        payload["nll_val"] = float(np.mean(calib_rep["nll_after"]))
+        payload["thresholds"] = dict(fitted_pair)
+        payload["fitted_thresholds"] = fitted_pair
+        payload["per_head_thresholds"] = fitted_thresh_info["per_head_thresholds"]
+
+        cal_res = dict(cal_res)
+        cal_res["fitted_temperatures"] = clamped_temps
+        cal_res["report"] = calib_rep
+
+    cal_res = dict(cal_res)
+    cal_res["calibration_payload"] = payload
+    return cal_res
+
+
 def export_nanojev_with_outlier_fallback(
     *,
     checkpoint_path: Path | str | None,
@@ -204,9 +270,10 @@ def export_nanojev_with_outlier_fallback(
     output_bundle: Path | str,
     model_id: str = "DiodeMCP-NanoJev-0.6B",
     max_flip_rate: float = 0.05,
-    calib_max_rows: int = 64,
+    calib_max_rows: int = 512,
     flip_max_rows: int = 32,
-    calib_batch_size: int = 8,
+    calib_batch_size: int = 16,
+    min_temp: float = 0.75,
     calib_buckets: Sequence[int] = DEFAULT_CALIB_BUCKETS,
     length_buckets: Sequence[int] = tuple(DEFAULT_LENGTH_BUCKETS),
     max_seq_len: int = 8192,
@@ -285,6 +352,11 @@ def export_nanojev_with_outlier_fallback(
                 calib_buckets=eff_buckets,
                 pad_token_id=pad_token_id,
                 intra_op_threads=threads,
+            )
+            cal_res = _apply_min_temperature_floor(
+                int8_onnx_path,
+                cal_res,
+                min_temp=min_temp,
             )
             cal_payload = cal_res["calibration_payload"]
             eff_thresh = cal_payload["thresholds"]
@@ -400,9 +472,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-bundle", type=Path, required=True, help="Target bundle directory")
     parser.add_argument("--model-id", type=str, default="DiodeMCP-NanoJev-0.6B")
     parser.add_argument("--max-flip-rate", type=float, default=0.05)
-    parser.add_argument("--calib-max-rows", type=int, default=64)
+    parser.add_argument("--calib-max-rows", type=int, default=512)
     parser.add_argument("--flip-max-rows", type=int, default=32)
-    parser.add_argument("--calib-batch-size", type=int, default=8)
+    parser.add_argument("--calib-batch-size", type=int, default=16)
+    parser.add_argument("--min-temp", type=float, default=0.75)
     parser.add_argument("--calib-buckets", type=str, default="256,512")
     parser.add_argument("--intra-op-threads", type=int, default=os.cpu_count() or 4)
     parser.add_argument("--staging-dir", type=Path, default=None)
@@ -435,6 +508,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         calib_max_rows=args.calib_max_rows,
         flip_max_rows=args.flip_max_rows,
         calib_batch_size=args.calib_batch_size,
+        min_temp=args.min_temp,
         calib_buckets=buckets,
         intra_op_threads=threads,
         reduce_range=args.reduce_range,

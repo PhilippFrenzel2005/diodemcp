@@ -8,7 +8,11 @@ from pathlib import Path
 import onnx
 import torch
 from diodemcp.bundle import REQUIRED_BUNDLE_FILES, validate_bundle_dir
-from diodemodel.export_bundle import build_smoke_jev_tokenizer, export_fp32_onnx
+from diodemodel.export_bundle import (
+    build_smoke_jev_tokenizer,
+    export_fp32_onnx,
+    read_onnx_logit_temperatures,
+)
 from diodemodel.train import (
     _build_tiny_smoke_nanojev,
     make_synthetic_curriculum_dataset,
@@ -80,6 +84,12 @@ def test_export_nanojev_cpu_standard_and_down_proj_fallback(tmp_path: Path) -> N
     manifest_std = validate_bundle_dir(bundle_std, verify_sha256=True)
     assert manifest_std.model_id == "DiodeMCP-NanoJev-0.6B-smoke"
     assert res_std["reused_fp32"] is False
+    assert all(t >= 0.75 for t in res_std["temperatures"])
+    baked_temps = read_onnx_logit_temperatures(bundle_std / "model_int8.onnx").tolist()
+    assert all(abs(a - b) < 1e-5 for a, b in zip(baked_temps, res_std["temperatures"], strict=True))
+    calib_std = json.loads((bundle_std / "calibration.json").read_text(encoding="utf-8"))
+    assert calib_std["min_temp"] == 0.75
+    assert calib_std["temperatures"] == res_std["temperatures"]
 
     # (a2) Reuse existing FP32 ONNX in staging_dir without touching checkpoint
     res_reuse = export_nanojev_with_outlier_fallback(
@@ -99,6 +109,30 @@ def test_export_nanojev_cpu_standard_and_down_proj_fallback(tmp_path: Path) -> N
     assert res_reuse["reused_fp32"] is True
     assert res_reuse["flip_eval_rows"] == 4
     assert validate_bundle_dir(bundle_std, verify_sha256=True).model_id == "DiodeMCP-NanoJev-0.6B-smoke-reuse"
+
+    # (a3) Verify min_temp floor actively clamps, re-bakes ONNX, and passes bundle verification
+    res_floor = export_nanojev_with_outlier_fallback(
+        checkpoint_path=None,
+        tokenizer_path=tok_path,
+        val_calib_path=val_path,
+        output_bundle=bundle_std,
+        model_id="DiodeMCP-NanoJev-0.6B-smoke-floor",
+        max_flip_rate=1.0,
+        calib_max_rows=8,
+        flip_max_rows=4,
+        min_temp=2.0,
+        calib_buckets=(128, 256),
+        intra_op_threads=2,
+        staging_dir=tmp_path / "stage_std",
+        reuse_fp32=True,
+    )
+    assert all(t >= 2.0 for t in res_floor["temperatures"])
+    baked_floor = read_onnx_logit_temperatures(bundle_std / "model_int8.onnx").tolist()
+    assert all(abs(a - b) < 1e-5 for a, b in zip(baked_floor, res_floor["temperatures"], strict=True))
+    calib_floor = json.loads((bundle_std / "calibration.json").read_text(encoding="utf-8"))
+    assert calib_floor["min_temp"] == 2.0
+    assert calib_floor["temperatures"] == res_floor["temperatures"]
+    assert validate_bundle_dir(bundle_std, verify_sha256=True).model_id == "DiodeMCP-NanoJev-0.6B-smoke-floor"
 
     # (b) Force max_flip_rate=-1.0 to trigger mlp.down_proj exclusion fallback
     bundle_fb = tmp_path / "bundle_fb"
