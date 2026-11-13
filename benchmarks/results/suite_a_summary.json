@@ -1,0 +1,6549 @@
+{
+  "suite_a": [
+    {
+      "contender_id": "diodemcp-nanojev-0.6b",
+      "total_traces": 600,
+      "error_count": 0,
+      "cold_start_ms": 6170.844708,
+      "peak_rss_mb": 2949.7734375,
+      "latency_p50_ms": 514.6675725,
+      "latency_p95_ms": 530.2929592999999,
+      "latency_mean_ms": 440.8287430383333,
+      "latency_max_ms": 9351.652946,
+      "protective": {
+        "overall": {
+          "total": 600,
+          "positives": 360,
+          "negatives": 240,
+          "tp": 349,
+          "fp": 5,
+          "tn": 235,
+          "fn": 11,
+          "recall": 0.9694444444444444,
+          "recall_ci_95": [
+            0.9461218598580352,
+            0.9828541867298024
+          ],
+          "fpr": 0.020833333333333332,
+          "fpr_ci_95": [
+            0.008930796114630168,
+            0.04783337716269703
+          ],
+          "precision": 0.9858757062146892,
+          "f1": 0.9775910364145659,
+          "accuracy": 0.9733333333333334,
+          "auroc": 0.9988541666666667,
+          "pr_auc": 0.9992412290910969
+        },
+        "per_vector": {
+          "V1": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 60,
+            "fp": 0,
+            "tn": 0,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B1": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V2": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 60,
+            "fp": 0,
+            "tn": 0,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B2": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V3": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 60,
+            "fp": 0,
+            "tn": 0,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B3": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V4": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 49,
+            "fp": 0,
+            "tn": 0,
+            "fn": 11,
+            "recall": 0.8166666666666667,
+            "recall_ci_95": [
+              0.7008024625353194,
+              0.8944220311080237
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 0.8990825688073394,
+            "accuracy": 0.8166666666666667,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B4": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V5": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 60,
+            "fp": 0,
+            "tn": 0,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B5": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 5,
+            "tn": 35,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.125,
+            "fpr_ci_95": [
+              0.054595002509454024,
+              0.26112119838851094
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.875,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V6": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 60,
+            "fp": 0,
+            "tn": 0,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B6": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          }
+        },
+        "paired_vectors": {
+          "vector_1": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 60,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": 1.0,
+            "pr_auc": 1.0
+          },
+          "vector_2": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 60,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": 1.0,
+            "pr_auc": 1.0
+          },
+          "vector_3": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 60,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": 1.0,
+            "pr_auc": 1.0
+          },
+          "vector_4": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 49,
+            "fp": 0,
+            "tn": 40,
+            "fn": 11,
+            "recall": 0.8166666666666667,
+            "recall_ci_95": [
+              0.7008024625353194,
+              0.8944220311080237
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 1.0,
+            "f1": 0.8990825688073394,
+            "accuracy": 0.89,
+            "auroc": 1.0,
+            "pr_auc": 1.0
+          },
+          "vector_5": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 60,
+            "fp": 5,
+            "tn": 35,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.125,
+            "fpr_ci_95": [
+              0.054595002509454024,
+              0.26112119838851094
+            ],
+            "precision": 0.9230769230769231,
+            "f1": 0.9600000000000001,
+            "accuracy": 0.95,
+            "auroc": 0.9995833333333334,
+            "pr_auc": 0.9997267759562841
+          },
+          "vector_6": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 60,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": 1.0,
+            "pr_auc": 1.0
+          }
+        }
+      },
+      "hard": {
+        "overall": {
+          "total": 600,
+          "positives": 360,
+          "negatives": 240,
+          "tp": 344,
+          "fp": 1,
+          "tn": 239,
+          "fn": 16,
+          "recall": 0.9555555555555556,
+          "recall_ci_95": [
+            0.9290311350214198,
+            0.9724604131466594
+          ],
+          "fpr": 0.004166666666666667,
+          "fpr_ci_95": [
+            0.0007358980250827037,
+            0.02322007258362979
+          ],
+          "precision": 0.9971014492753624,
+          "f1": 0.975886524822695,
+          "accuracy": 0.9716666666666667,
+          "auroc": 0.9988541666666667,
+          "pr_auc": 0.9992412290910969
+        },
+        "per_vector": {
+          "V1": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 60,
+            "fp": 0,
+            "tn": 0,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B1": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V2": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 60,
+            "fp": 0,
+            "tn": 0,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B2": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V3": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 60,
+            "fp": 0,
+            "tn": 0,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B3": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V4": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 44,
+            "fp": 0,
+            "tn": 0,
+            "fn": 16,
+            "recall": 0.7333333333333333,
+            "recall_ci_95": [
+              0.6099128690331636,
+              0.8286735999671945
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 0.846153846153846,
+            "accuracy": 0.7333333333333333,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B4": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V5": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 60,
+            "fp": 0,
+            "tn": 0,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B5": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 1,
+            "tn": 39,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.025,
+            "fpr_ci_95": [
+              0.0044268315026814095,
+              0.1288136896347409
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.975,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V6": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 60,
+            "fp": 0,
+            "tn": 0,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B6": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          }
+        },
+        "paired_vectors": {
+          "vector_1": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 60,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": 1.0,
+            "pr_auc": 1.0
+          },
+          "vector_2": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 60,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": 1.0,
+            "pr_auc": 1.0
+          },
+          "vector_3": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 60,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": 1.0,
+            "pr_auc": 1.0
+          },
+          "vector_4": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 44,
+            "fp": 0,
+            "tn": 40,
+            "fn": 16,
+            "recall": 0.7333333333333333,
+            "recall_ci_95": [
+              0.6099128690331636,
+              0.8286735999671945
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 1.0,
+            "f1": 0.846153846153846,
+            "accuracy": 0.84,
+            "auroc": 1.0,
+            "pr_auc": 1.0
+          },
+          "vector_5": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 60,
+            "fp": 1,
+            "tn": 39,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.025,
+            "fpr_ci_95": [
+              0.0044268315026814095,
+              0.1288136896347409
+            ],
+            "precision": 0.9836065573770492,
+            "f1": 0.9917355371900827,
+            "accuracy": 0.99,
+            "auroc": 0.9995833333333334,
+            "pr_auc": 0.9997267759562841
+          },
+          "vector_6": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 60,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": 1.0,
+            "pr_auc": 1.0
+          }
+        }
+      }
+    },
+    {
+      "contender_id": "diodemcp-base-149m",
+      "total_traces": 600,
+      "error_count": 0,
+      "cold_start_ms": 1648.747561,
+      "peak_rss_mb": 1551.34375,
+      "latency_p50_ms": 153.65508549999998,
+      "latency_p95_ms": 166.80338265,
+      "latency_mean_ms": 137.66263149,
+      "latency_max_ms": 3365.731211,
+      "protective": {
+        "overall": {
+          "total": 600,
+          "positives": 360,
+          "negatives": 240,
+          "tp": 341,
+          "fp": 15,
+          "tn": 225,
+          "fn": 19,
+          "recall": 0.9472222222222222,
+          "recall_ci_95": [
+            0.9190458567486823,
+            0.9659549923675417
+          ],
+          "fpr": 0.0625,
+          "fpr_ci_95": [
+            0.03823811719647034,
+            0.10054656275239364
+          ],
+          "precision": 0.9578651685393258,
+          "f1": 0.9525139664804468,
+          "accuracy": 0.9433333333333334,
+          "auroc": 0.9903935185185185,
+          "pr_auc": 0.9943717701964472
+        },
+        "per_vector": {
+          "V1": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 60,
+            "fp": 0,
+            "tn": 0,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B1": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 1,
+            "tn": 39,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.025,
+            "fpr_ci_95": [
+              0.0044268315026814095,
+              0.1288136896347409
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.975,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V2": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 60,
+            "fp": 0,
+            "tn": 0,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B2": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V3": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 60,
+            "fp": 0,
+            "tn": 0,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B3": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 1,
+            "tn": 39,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.025,
+            "fpr_ci_95": [
+              0.0044268315026814095,
+              0.1288136896347409
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.975,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V4": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 60,
+            "fp": 0,
+            "tn": 0,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B4": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 13,
+            "tn": 27,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.325,
+            "fpr_ci_95": [
+              0.200845022317827,
+              0.47982253810122333
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.675,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V5": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 41,
+            "fp": 0,
+            "tn": 0,
+            "fn": 19,
+            "recall": 0.6833333333333333,
+            "recall_ci_95": [
+              0.5576623297382323,
+              0.7869413244763347
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 0.8118811881188119,
+            "accuracy": 0.6833333333333333,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B5": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V6": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 60,
+            "fp": 0,
+            "tn": 0,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B6": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          }
+        },
+        "paired_vectors": {
+          "vector_1": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 60,
+            "fp": 1,
+            "tn": 39,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.025,
+            "fpr_ci_95": [
+              0.0044268315026814095,
+              0.1288136896347409
+            ],
+            "precision": 0.9836065573770492,
+            "f1": 0.9917355371900827,
+            "accuracy": 0.99,
+            "auroc": 1.0,
+            "pr_auc": 1.0
+          },
+          "vector_2": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 60,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": 1.0,
+            "pr_auc": 1.0
+          },
+          "vector_3": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 60,
+            "fp": 1,
+            "tn": 39,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.025,
+            "fpr_ci_95": [
+              0.0044268315026814095,
+              0.1288136896347409
+            ],
+            "precision": 0.9836065573770492,
+            "f1": 0.9917355371900827,
+            "accuracy": 0.99,
+            "auroc": 1.0,
+            "pr_auc": 1.0
+          },
+          "vector_4": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 60,
+            "fp": 13,
+            "tn": 27,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.325,
+            "fpr_ci_95": [
+              0.200845022317827,
+              0.47982253810122333
+            ],
+            "precision": 0.821917808219178,
+            "f1": 0.9022556390977443,
+            "accuracy": 0.87,
+            "auroc": 1.0,
+            "pr_auc": 1.0
+          },
+          "vector_5": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 41,
+            "fp": 0,
+            "tn": 40,
+            "fn": 19,
+            "recall": 0.6833333333333333,
+            "recall_ci_95": [
+              0.5576623297382323,
+              0.7869413244763347
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 1.0,
+            "f1": 0.8118811881188119,
+            "accuracy": 0.81,
+            "auroc": 0.9666666666666667,
+            "pr_auc": 0.9832628008787997
+          },
+          "vector_6": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 60,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": 1.0,
+            "pr_auc": 1.0
+          }
+        }
+      },
+      "hard": {
+        "overall": {
+          "total": 600,
+          "positives": 360,
+          "negatives": 240,
+          "tp": 340,
+          "fp": 3,
+          "tn": 237,
+          "fn": 20,
+          "recall": 0.9444444444444444,
+          "recall_ci_95": [
+            0.9157521540323447,
+            0.9637517953999276
+          ],
+          "fpr": 0.0125,
+          "fpr_ci_95": [
+            0.004260067321970977,
+            0.03610000462104887
+          ],
+          "precision": 0.9912536443148688,
+          "f1": 0.9672830725462305,
+          "accuracy": 0.9616666666666667,
+          "auroc": 0.9903935185185185,
+          "pr_auc": 0.9943717701964472
+        },
+        "per_vector": {
+          "V1": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 60,
+            "fp": 0,
+            "tn": 0,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B1": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V2": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 60,
+            "fp": 0,
+            "tn": 0,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B2": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V3": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 60,
+            "fp": 0,
+            "tn": 0,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B3": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V4": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 60,
+            "fp": 0,
+            "tn": 0,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B4": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 3,
+            "tn": 37,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.075,
+            "fpr_ci_95": [
+              0.025836025774588198,
+              0.19864233524310543
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.925,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V5": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 40,
+            "fp": 0,
+            "tn": 0,
+            "fn": 20,
+            "recall": 0.6666666666666666,
+            "recall_ci_95": [
+              0.5405686645211968,
+              0.7727073847647731
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 0.8,
+            "accuracy": 0.6666666666666666,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B5": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V6": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 60,
+            "fp": 0,
+            "tn": 0,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B6": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          }
+        },
+        "paired_vectors": {
+          "vector_1": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 60,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": 1.0,
+            "pr_auc": 1.0
+          },
+          "vector_2": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 60,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": 1.0,
+            "pr_auc": 1.0
+          },
+          "vector_3": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 60,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": 1.0,
+            "pr_auc": 1.0
+          },
+          "vector_4": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 60,
+            "fp": 3,
+            "tn": 37,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.075,
+            "fpr_ci_95": [
+              0.025836025774588198,
+              0.19864233524310543
+            ],
+            "precision": 0.9523809523809523,
+            "f1": 0.975609756097561,
+            "accuracy": 0.97,
+            "auroc": 1.0,
+            "pr_auc": 1.0
+          },
+          "vector_5": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 40,
+            "fp": 0,
+            "tn": 40,
+            "fn": 20,
+            "recall": 0.6666666666666666,
+            "recall_ci_95": [
+              0.5405686645211968,
+              0.7727073847647731
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 1.0,
+            "f1": 0.8,
+            "accuracy": 0.8,
+            "auroc": 0.9666666666666667,
+            "pr_auc": 0.9832628008787997
+          },
+          "vector_6": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 60,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": 1.0,
+            "pr_auc": 1.0
+          }
+        }
+      }
+    },
+    {
+      "contender_id": "diodemcp-tier0-only",
+      "total_traces": 600,
+      "error_count": 0,
+      "cold_start_ms": 0.001601,
+      "peak_rss_mb": 76.18359375,
+      "latency_p50_ms": 27.57637,
+      "latency_p95_ms": 40.88958079999993,
+      "latency_mean_ms": 32.99931094833333,
+      "latency_max_ms": 270.862993,
+      "protective": {
+        "overall": {
+          "total": 600,
+          "positives": 360,
+          "negatives": 240,
+          "tp": 360,
+          "fp": 51,
+          "tn": 189,
+          "fn": 0,
+          "recall": 1.0,
+          "recall_ci_95": [
+            0.9894419431113063,
+            0.9999999999999999
+          ],
+          "fpr": 0.2125,
+          "fpr_ci_95": [
+            0.16548476475374232,
+            0.26857373921265404
+          ],
+          "precision": 0.8759124087591241,
+          "f1": 0.933852140077821,
+          "accuracy": 0.915,
+          "auroc": 0.9785879629629629,
+          "pr_auc": 0.9784650721852146
+        },
+        "per_vector": {
+          "V1": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 60,
+            "fp": 0,
+            "tn": 0,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B1": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 14,
+            "tn": 26,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.35,
+            "fpr_ci_95": [
+              0.2213452887317629,
+              0.5049411916274231
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.65,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V2": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 60,
+            "fp": 0,
+            "tn": 0,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B2": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V3": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 60,
+            "fp": 0,
+            "tn": 0,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B3": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V4": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 60,
+            "fp": 0,
+            "tn": 0,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B4": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 14,
+            "tn": 26,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.35,
+            "fpr_ci_95": [
+              0.2213452887317629,
+              0.5049411916274231
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.65,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V5": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 60,
+            "fp": 0,
+            "tn": 0,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B5": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 13,
+            "tn": 27,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.325,
+            "fpr_ci_95": [
+              0.200845022317827,
+              0.47982253810122333
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.675,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V6": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 60,
+            "fp": 0,
+            "tn": 0,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B6": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 10,
+            "tn": 30,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.25,
+            "fpr_ci_95": [
+              0.14187118639096302,
+              0.40193961420768026
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.75,
+            "auroc": null,
+            "pr_auc": null
+          }
+        },
+        "paired_vectors": {
+          "vector_1": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 60,
+            "fp": 14,
+            "tn": 26,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.35,
+            "fpr_ci_95": [
+              0.2213452887317629,
+              0.5049411916274231
+            ],
+            "precision": 0.8108108108108109,
+            "f1": 0.8955223880597014,
+            "accuracy": 0.86,
+            "auroc": 1.0,
+            "pr_auc": 1.0
+          },
+          "vector_2": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 60,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": 1.0,
+            "pr_auc": 1.0
+          },
+          "vector_3": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 60,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": 1.0,
+            "pr_auc": 1.0
+          },
+          "vector_4": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 60,
+            "fp": 14,
+            "tn": 26,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.35,
+            "fpr_ci_95": [
+              0.2213452887317629,
+              0.5049411916274231
+            ],
+            "precision": 0.8108108108108109,
+            "f1": 0.8955223880597014,
+            "accuracy": 0.86,
+            "auroc": 1.0,
+            "pr_auc": 1.0
+          },
+          "vector_5": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 60,
+            "fp": 13,
+            "tn": 27,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.325,
+            "fpr_ci_95": [
+              0.200845022317827,
+              0.47982253810122333
+            ],
+            "precision": 0.821917808219178,
+            "f1": 0.9022556390977443,
+            "accuracy": 0.87,
+            "auroc": 0.8916666666666667,
+            "pr_auc": 0.9406392694063928
+          },
+          "vector_6": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 60,
+            "fp": 10,
+            "tn": 30,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.25,
+            "fpr_ci_95": [
+              0.14187118639096302,
+              0.40193961420768026
+            ],
+            "precision": 0.8571428571428571,
+            "f1": 0.923076923076923,
+            "accuracy": 0.9,
+            "auroc": 1.0,
+            "pr_auc": 1.0
+          }
+        }
+      },
+      "hard": {
+        "overall": {
+          "total": 600,
+          "positives": 360,
+          "negatives": 240,
+          "tp": 340,
+          "fp": 37,
+          "tn": 203,
+          "fn": 20,
+          "recall": 0.9444444444444444,
+          "recall_ci_95": [
+            0.9157521540323447,
+            0.9637517953999276
+          ],
+          "fpr": 0.15416666666666667,
+          "fpr_ci_95": [
+            0.11396422987732183,
+            0.20526556474892307
+          ],
+          "precision": 0.9018567639257294,
+          "f1": 0.9226594301221166,
+          "accuracy": 0.905,
+          "auroc": 0.9785879629629629,
+          "pr_auc": 0.9784650721852146
+        },
+        "per_vector": {
+          "V1": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 60,
+            "fp": 0,
+            "tn": 0,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B1": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 14,
+            "tn": 26,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.35,
+            "fpr_ci_95": [
+              0.2213452887317629,
+              0.5049411916274231
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.65,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V2": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 60,
+            "fp": 0,
+            "tn": 0,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B2": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V3": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 60,
+            "fp": 0,
+            "tn": 0,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B3": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V4": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 60,
+            "fp": 0,
+            "tn": 0,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B4": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V5": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 40,
+            "fp": 0,
+            "tn": 0,
+            "fn": 20,
+            "recall": 0.6666666666666666,
+            "recall_ci_95": [
+              0.5405686645211968,
+              0.7727073847647731
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 0.8,
+            "accuracy": 0.6666666666666666,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B5": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 13,
+            "tn": 27,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.325,
+            "fpr_ci_95": [
+              0.200845022317827,
+              0.47982253810122333
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.675,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V6": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 60,
+            "fp": 0,
+            "tn": 0,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B6": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 10,
+            "tn": 30,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.25,
+            "fpr_ci_95": [
+              0.14187118639096302,
+              0.40193961420768026
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.75,
+            "auroc": null,
+            "pr_auc": null
+          }
+        },
+        "paired_vectors": {
+          "vector_1": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 60,
+            "fp": 14,
+            "tn": 26,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.35,
+            "fpr_ci_95": [
+              0.2213452887317629,
+              0.5049411916274231
+            ],
+            "precision": 0.8108108108108109,
+            "f1": 0.8955223880597014,
+            "accuracy": 0.86,
+            "auroc": 1.0,
+            "pr_auc": 1.0
+          },
+          "vector_2": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 60,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": 1.0,
+            "pr_auc": 1.0
+          },
+          "vector_3": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 60,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": 1.0,
+            "pr_auc": 1.0
+          },
+          "vector_4": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 60,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": 1.0,
+            "pr_auc": 1.0
+          },
+          "vector_5": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 40,
+            "fp": 13,
+            "tn": 27,
+            "fn": 20,
+            "recall": 0.6666666666666666,
+            "recall_ci_95": [
+              0.5405686645211968,
+              0.7727073847647731
+            ],
+            "fpr": 0.325,
+            "fpr_ci_95": [
+              0.200845022317827,
+              0.47982253810122333
+            ],
+            "precision": 0.7547169811320755,
+            "f1": 0.7079646017699115,
+            "accuracy": 0.67,
+            "auroc": 0.8916666666666667,
+            "pr_auc": 0.9406392694063928
+          },
+          "vector_6": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 60,
+            "fp": 10,
+            "tn": 30,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.25,
+            "fpr_ci_95": [
+              0.14187118639096302,
+              0.40193961420768026
+            ],
+            "precision": 0.8571428571428571,
+            "f1": 0.923076923076923,
+            "accuracy": 0.9,
+            "auroc": 1.0,
+            "pr_auc": 1.0
+          }
+        }
+      }
+    },
+    {
+      "contender_id": "protectai-llm-guard",
+      "total_traces": 600,
+      "error_count": 0,
+      "cold_start_ms": 4507.083178,
+      "peak_rss_mb": 1863.546875,
+      "latency_p50_ms": 1025.866135,
+      "latency_p95_ms": 1190.8548458999999,
+      "latency_mean_ms": 1042.1065263983335,
+      "latency_max_ms": 1647.151887,
+      "protective": {
+        "overall": {
+          "total": 600,
+          "positives": 360,
+          "negatives": 240,
+          "tp": 334,
+          "fp": 134,
+          "tn": 106,
+          "fn": 26,
+          "recall": 0.9277777777777778,
+          "recall_ci_95": [
+            0.8962825103835209,
+            0.9502400409450414
+          ],
+          "fpr": 0.5583333333333333,
+          "fpr_ci_95": [
+            0.49507883174387257,
+            0.6197498775962789
+          ],
+          "precision": 0.7136752136752137,
+          "f1": 0.8067632850241547,
+          "accuracy": 0.7333333333333333,
+          "auroc": 0.7422627314814815,
+          "pr_auc": 0.7517869614368748
+        },
+        "per_vector": {
+          "V1": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 60,
+            "fp": 0,
+            "tn": 0,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B1": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 19,
+            "tn": 21,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.475,
+            "fpr_ci_95": [
+              0.329354701126789,
+              0.6250263789330753
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.525,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V2": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 59,
+            "fp": 0,
+            "tn": 0,
+            "fn": 1,
+            "recall": 0.9833333333333333,
+            "recall_ci_95": [
+              0.9114487027240993,
+              0.9970518402052136
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 0.9915966386554621,
+            "accuracy": 0.9833333333333333,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B2": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 27,
+            "tn": 13,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.675,
+            "fpr_ci_95": [
+              0.5201774618987768,
+              0.799154977682173
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.325,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V3": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 60,
+            "fp": 0,
+            "tn": 0,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B3": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 20,
+            "tn": 20,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.5,
+            "fpr_ci_95": [
+              0.35199526933465386,
+              0.6480047306653461
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.5,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V4": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 60,
+            "fp": 0,
+            "tn": 0,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B4": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 14,
+            "tn": 26,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.35,
+            "fpr_ci_95": [
+              0.2213452887317629,
+              0.5049411916274231
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.65,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V5": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 35,
+            "fp": 0,
+            "tn": 0,
+            "fn": 25,
+            "recall": 0.5833333333333334,
+            "recall_ci_95": [
+              0.45728081022640116,
+              0.6993572144165838
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 0.7368421052631579,
+            "accuracy": 0.5833333333333334,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B5": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 14,
+            "tn": 26,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.35,
+            "fpr_ci_95": [
+              0.2213452887317629,
+              0.5049411916274231
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.65,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V6": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 60,
+            "fp": 0,
+            "tn": 0,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B6": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 40,
+            "tn": 0,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 1.0,
+            "fpr_ci_95": [
+              0.9123783988027135,
+              1.0
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.0,
+            "auroc": null,
+            "pr_auc": null
+          }
+        },
+        "paired_vectors": {
+          "vector_1": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 60,
+            "fp": 19,
+            "tn": 21,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.475,
+            "fpr_ci_95": [
+              0.329354701126789,
+              0.6250263789330753
+            ],
+            "precision": 0.759493670886076,
+            "f1": 0.8633093525179857,
+            "accuracy": 0.81,
+            "auroc": 1.0,
+            "pr_auc": 1.0
+          },
+          "vector_2": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 59,
+            "fp": 27,
+            "tn": 13,
+            "fn": 1,
+            "recall": 0.9833333333333333,
+            "recall_ci_95": [
+              0.9114487027240993,
+              0.9970518402052136
+            ],
+            "fpr": 0.675,
+            "fpr_ci_95": [
+              0.5201774618987768,
+              0.799154977682173
+            ],
+            "precision": 0.686046511627907,
+            "f1": 0.8082191780821918,
+            "accuracy": 0.72,
+            "auroc": 0.6429166666666667,
+            "pr_auc": 0.6775110741971208
+          },
+          "vector_3": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 60,
+            "fp": 20,
+            "tn": 20,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.5,
+            "fpr_ci_95": [
+              0.35199526933465386,
+              0.6480047306653461
+            ],
+            "precision": 0.75,
+            "f1": 0.8571428571428571,
+            "accuracy": 0.8,
+            "auroc": 0.95,
+            "pr_auc": 0.9375
+          },
+          "vector_4": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 60,
+            "fp": 14,
+            "tn": 26,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.35,
+            "fpr_ci_95": [
+              0.2213452887317629,
+              0.5049411916274231
+            ],
+            "precision": 0.8108108108108109,
+            "f1": 0.8955223880597014,
+            "accuracy": 0.86,
+            "auroc": 0.7229166666666667,
+            "pr_auc": 0.7220171732802629
+          },
+          "vector_5": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 35,
+            "fp": 14,
+            "tn": 26,
+            "fn": 25,
+            "recall": 0.5833333333333334,
+            "recall_ci_95": [
+              0.45728081022640116,
+              0.6993572144165838
+            ],
+            "fpr": 0.35,
+            "fpr_ci_95": [
+              0.2213452887317629,
+              0.5049411916274231
+            ],
+            "precision": 0.7142857142857143,
+            "f1": 0.6422018348623854,
+            "accuracy": 0.61,
+            "auroc": 0.589375,
+            "pr_auc": 0.6383201058201058
+          },
+          "vector_6": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 60,
+            "fp": 40,
+            "tn": 0,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 1.0,
+            "fpr_ci_95": [
+              0.9123783988027135,
+              1.0
+            ],
+            "precision": 0.6,
+            "f1": 0.7499999999999999,
+            "accuracy": 0.6,
+            "auroc": 0.625,
+            "pr_auc": 0.6666666666666666
+          }
+        }
+      },
+      "hard": {
+        "overall": {
+          "total": 600,
+          "positives": 360,
+          "negatives": 240,
+          "tp": 334,
+          "fp": 134,
+          "tn": 106,
+          "fn": 26,
+          "recall": 0.9277777777777778,
+          "recall_ci_95": [
+            0.8962825103835209,
+            0.9502400409450414
+          ],
+          "fpr": 0.5583333333333333,
+          "fpr_ci_95": [
+            0.49507883174387257,
+            0.6197498775962789
+          ],
+          "precision": 0.7136752136752137,
+          "f1": 0.8067632850241547,
+          "accuracy": 0.7333333333333333,
+          "auroc": 0.7422627314814815,
+          "pr_auc": 0.7517869614368748
+        },
+        "per_vector": {
+          "V1": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 60,
+            "fp": 0,
+            "tn": 0,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B1": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 19,
+            "tn": 21,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.475,
+            "fpr_ci_95": [
+              0.329354701126789,
+              0.6250263789330753
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.525,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V2": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 59,
+            "fp": 0,
+            "tn": 0,
+            "fn": 1,
+            "recall": 0.9833333333333333,
+            "recall_ci_95": [
+              0.9114487027240993,
+              0.9970518402052136
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 0.9915966386554621,
+            "accuracy": 0.9833333333333333,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B2": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 27,
+            "tn": 13,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.675,
+            "fpr_ci_95": [
+              0.5201774618987768,
+              0.799154977682173
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.325,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V3": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 60,
+            "fp": 0,
+            "tn": 0,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B3": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 20,
+            "tn": 20,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.5,
+            "fpr_ci_95": [
+              0.35199526933465386,
+              0.6480047306653461
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.5,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V4": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 60,
+            "fp": 0,
+            "tn": 0,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B4": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 14,
+            "tn": 26,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.35,
+            "fpr_ci_95": [
+              0.2213452887317629,
+              0.5049411916274231
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.65,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V5": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 35,
+            "fp": 0,
+            "tn": 0,
+            "fn": 25,
+            "recall": 0.5833333333333334,
+            "recall_ci_95": [
+              0.45728081022640116,
+              0.6993572144165838
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 0.7368421052631579,
+            "accuracy": 0.5833333333333334,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B5": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 14,
+            "tn": 26,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.35,
+            "fpr_ci_95": [
+              0.2213452887317629,
+              0.5049411916274231
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.65,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V6": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 60,
+            "fp": 0,
+            "tn": 0,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 1.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B6": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 40,
+            "tn": 0,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 1.0,
+            "fpr_ci_95": [
+              0.9123783988027135,
+              1.0
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.0,
+            "auroc": null,
+            "pr_auc": null
+          }
+        },
+        "paired_vectors": {
+          "vector_1": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 60,
+            "fp": 19,
+            "tn": 21,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.475,
+            "fpr_ci_95": [
+              0.329354701126789,
+              0.6250263789330753
+            ],
+            "precision": 0.759493670886076,
+            "f1": 0.8633093525179857,
+            "accuracy": 0.81,
+            "auroc": 1.0,
+            "pr_auc": 1.0
+          },
+          "vector_2": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 59,
+            "fp": 27,
+            "tn": 13,
+            "fn": 1,
+            "recall": 0.9833333333333333,
+            "recall_ci_95": [
+              0.9114487027240993,
+              0.9970518402052136
+            ],
+            "fpr": 0.675,
+            "fpr_ci_95": [
+              0.5201774618987768,
+              0.799154977682173
+            ],
+            "precision": 0.686046511627907,
+            "f1": 0.8082191780821918,
+            "accuracy": 0.72,
+            "auroc": 0.6429166666666667,
+            "pr_auc": 0.6775110741971208
+          },
+          "vector_3": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 60,
+            "fp": 20,
+            "tn": 20,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.5,
+            "fpr_ci_95": [
+              0.35199526933465386,
+              0.6480047306653461
+            ],
+            "precision": 0.75,
+            "f1": 0.8571428571428571,
+            "accuracy": 0.8,
+            "auroc": 0.95,
+            "pr_auc": 0.9375
+          },
+          "vector_4": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 60,
+            "fp": 14,
+            "tn": 26,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 0.35,
+            "fpr_ci_95": [
+              0.2213452887317629,
+              0.5049411916274231
+            ],
+            "precision": 0.8108108108108109,
+            "f1": 0.8955223880597014,
+            "accuracy": 0.86,
+            "auroc": 0.7229166666666667,
+            "pr_auc": 0.7220171732802629
+          },
+          "vector_5": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 35,
+            "fp": 14,
+            "tn": 26,
+            "fn": 25,
+            "recall": 0.5833333333333334,
+            "recall_ci_95": [
+              0.45728081022640116,
+              0.6993572144165838
+            ],
+            "fpr": 0.35,
+            "fpr_ci_95": [
+              0.2213452887317629,
+              0.5049411916274231
+            ],
+            "precision": 0.7142857142857143,
+            "f1": 0.6422018348623854,
+            "accuracy": 0.61,
+            "auroc": 0.589375,
+            "pr_auc": 0.6383201058201058
+          },
+          "vector_6": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 60,
+            "fp": 40,
+            "tn": 0,
+            "fn": 0,
+            "recall": 1.0,
+            "recall_ci_95": [
+              0.93982814785791,
+              0.9999999999999998
+            ],
+            "fpr": 1.0,
+            "fpr_ci_95": [
+              0.9123783988027135,
+              1.0
+            ],
+            "precision": 0.6,
+            "f1": 0.7499999999999999,
+            "accuracy": 0.6,
+            "auroc": 0.625,
+            "pr_auc": 0.6666666666666666
+          }
+        }
+      }
+    },
+    {
+      "contender_id": "cisco-mcp-scanner-defs",
+      "total_traces": 600,
+      "error_count": 0,
+      "cold_start_ms": 2337.095943,
+      "peak_rss_mb": 233.703125,
+      "latency_p50_ms": 0.7117450000000001,
+      "latency_p95_ms": 0.83385385,
+      "latency_mean_ms": 0.7278917033333333,
+      "latency_max_ms": 0.955243,
+      "protective": {
+        "overall": {
+          "total": 600,
+          "positives": 360,
+          "negatives": 240,
+          "tp": 45,
+          "fp": 0,
+          "tn": 240,
+          "fn": 315,
+          "recall": 0.125,
+          "recall_ci_95": [
+            0.09474723687619761,
+            0.16317130579032246
+          ],
+          "fpr": 0.0,
+          "fpr_ci_95": [
+            0.0,
+            0.015753919941558815
+          ],
+          "precision": 1.0,
+          "f1": 0.2222222222222222,
+          "accuracy": 0.475,
+          "auroc": 0.5625,
+          "pr_auc": 0.65
+        },
+        "per_vector": {
+          "V1": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 0,
+            "fp": 0,
+            "tn": 0,
+            "fn": 60,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.06017185214208986
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B1": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V2": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 0,
+            "fp": 0,
+            "tn": 0,
+            "fn": 60,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.06017185214208986
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B2": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V3": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 45,
+            "fp": 0,
+            "tn": 0,
+            "fn": 15,
+            "recall": 0.75,
+            "recall_ci_95": [
+              0.6276792992295218,
+              0.8422347746994333
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 0.8571428571428571,
+            "accuracy": 0.75,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B3": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V4": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 0,
+            "fp": 0,
+            "tn": 0,
+            "fn": 60,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.06017185214208986
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B4": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V5": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 0,
+            "fp": 0,
+            "tn": 0,
+            "fn": 60,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.06017185214208986
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B5": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V6": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 0,
+            "fp": 0,
+            "tn": 0,
+            "fn": 60,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.06017185214208986
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B6": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          }
+        },
+        "paired_vectors": {
+          "vector_1": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 60,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.06017185214208986
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.4,
+            "auroc": 0.5,
+            "pr_auc": 0.6
+          },
+          "vector_2": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 60,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.06017185214208986
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.4,
+            "auroc": 0.5,
+            "pr_auc": 0.6
+          },
+          "vector_3": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 45,
+            "fp": 0,
+            "tn": 40,
+            "fn": 15,
+            "recall": 0.75,
+            "recall_ci_95": [
+              0.6276792992295218,
+              0.8422347746994333
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 1.0,
+            "f1": 0.8571428571428571,
+            "accuracy": 0.85,
+            "auroc": 0.875,
+            "pr_auc": 0.9
+          },
+          "vector_4": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 60,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.06017185214208986
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.4,
+            "auroc": 0.5,
+            "pr_auc": 0.6
+          },
+          "vector_5": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 60,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.06017185214208986
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.4,
+            "auroc": 0.5,
+            "pr_auc": 0.6
+          },
+          "vector_6": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 60,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.06017185214208986
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.4,
+            "auroc": 0.5,
+            "pr_auc": 0.6
+          }
+        }
+      },
+      "hard": {
+        "overall": {
+          "total": 600,
+          "positives": 360,
+          "negatives": 240,
+          "tp": 45,
+          "fp": 0,
+          "tn": 240,
+          "fn": 315,
+          "recall": 0.125,
+          "recall_ci_95": [
+            0.09474723687619761,
+            0.16317130579032246
+          ],
+          "fpr": 0.0,
+          "fpr_ci_95": [
+            0.0,
+            0.015753919941558815
+          ],
+          "precision": 1.0,
+          "f1": 0.2222222222222222,
+          "accuracy": 0.475,
+          "auroc": 0.5625,
+          "pr_auc": 0.65
+        },
+        "per_vector": {
+          "V1": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 0,
+            "fp": 0,
+            "tn": 0,
+            "fn": 60,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.06017185214208986
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B1": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V2": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 0,
+            "fp": 0,
+            "tn": 0,
+            "fn": 60,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.06017185214208986
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B2": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V3": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 45,
+            "fp": 0,
+            "tn": 0,
+            "fn": 15,
+            "recall": 0.75,
+            "recall_ci_95": [
+              0.6276792992295218,
+              0.8422347746994333
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 0.8571428571428571,
+            "accuracy": 0.75,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B3": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V4": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 0,
+            "fp": 0,
+            "tn": 0,
+            "fn": 60,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.06017185214208986
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B4": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V5": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 0,
+            "fp": 0,
+            "tn": 0,
+            "fn": 60,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.06017185214208986
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B5": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V6": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 0,
+            "fp": 0,
+            "tn": 0,
+            "fn": 60,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.06017185214208986
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B6": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          }
+        },
+        "paired_vectors": {
+          "vector_1": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 60,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.06017185214208986
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.4,
+            "auroc": 0.5,
+            "pr_auc": 0.6
+          },
+          "vector_2": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 60,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.06017185214208986
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.4,
+            "auroc": 0.5,
+            "pr_auc": 0.6
+          },
+          "vector_3": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 45,
+            "fp": 0,
+            "tn": 40,
+            "fn": 15,
+            "recall": 0.75,
+            "recall_ci_95": [
+              0.6276792992295218,
+              0.8422347746994333
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 1.0,
+            "f1": 0.8571428571428571,
+            "accuracy": 0.85,
+            "auroc": 0.875,
+            "pr_auc": 0.9
+          },
+          "vector_4": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 60,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.06017185214208986
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.4,
+            "auroc": 0.5,
+            "pr_auc": 0.6
+          },
+          "vector_5": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 60,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.06017185214208986
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.4,
+            "auroc": 0.5,
+            "pr_auc": 0.6
+          },
+          "vector_6": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 60,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.06017185214208986
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.4,
+            "auroc": 0.5,
+            "pr_auc": 0.6
+          }
+        }
+      }
+    },
+    {
+      "contender_id": "cisco-mcp-scanner-extended",
+      "total_traces": 600,
+      "error_count": 0,
+      "cold_start_ms": 2346.939023,
+      "peak_rss_mb": 233.68359375,
+      "latency_p50_ms": 0.8469175,
+      "latency_p95_ms": 0.9668776999999998,
+      "latency_mean_ms": 0.9934291216666666,
+      "latency_max_ms": 8.704883,
+      "protective": {
+        "overall": {
+          "total": 600,
+          "positives": 360,
+          "negatives": 240,
+          "tp": 141,
+          "fp": 26,
+          "tn": 214,
+          "fn": 219,
+          "recall": 0.39166666666666666,
+          "recall_ci_95": [
+            0.3426416217353609,
+            0.4429792905905227
+          ],
+          "fpr": 0.10833333333333334,
+          "fpr_ci_95": [
+            0.07500858950999717,
+            0.15399864777755726
+          ],
+          "precision": 0.844311377245509,
+          "f1": 0.5351043643263756,
+          "accuracy": 0.5916666666666667,
+          "auroc": 0.6125173611111111,
+          "pr_auc": 0.6956886227544911
+        },
+        "per_vector": {
+          "V1": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 46,
+            "fp": 0,
+            "tn": 0,
+            "fn": 14,
+            "recall": 0.7666666666666667,
+            "recall_ci_95": [
+              0.6456372962239805,
+              0.8556043826335717
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 0.8679245283018869,
+            "accuracy": 0.7666666666666667,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B1": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 13,
+            "tn": 27,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.325,
+            "fpr_ci_95": [
+              0.200845022317827,
+              0.47982253810122333
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.675,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V2": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 10,
+            "fp": 0,
+            "tn": 0,
+            "fn": 50,
+            "recall": 0.16666666666666666,
+            "recall_ci_95": [
+              0.0931317697919145,
+              0.2803161316361453
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 0.2857142857142857,
+            "accuracy": 0.16666666666666666,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B2": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V3": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 45,
+            "fp": 0,
+            "tn": 0,
+            "fn": 15,
+            "recall": 0.75,
+            "recall_ci_95": [
+              0.6276792992295218,
+              0.8422347746994333
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 0.8571428571428571,
+            "accuracy": 0.75,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B3": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V4": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 0,
+            "fp": 0,
+            "tn": 0,
+            "fn": 60,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.06017185214208986
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B4": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V5": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 10,
+            "fp": 0,
+            "tn": 0,
+            "fn": 50,
+            "recall": 0.16666666666666666,
+            "recall_ci_95": [
+              0.0931317697919145,
+              0.2803161316361453
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 0.2857142857142857,
+            "accuracy": 0.16666666666666666,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B5": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 13,
+            "tn": 27,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.325,
+            "fpr_ci_95": [
+              0.200845022317827,
+              0.47982253810122333
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.675,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V6": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 30,
+            "fp": 0,
+            "tn": 0,
+            "fn": 30,
+            "recall": 0.5,
+            "recall_ci_95": [
+              0.3773502424155577,
+              0.6226497575844423
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 0.6666666666666666,
+            "accuracy": 0.5,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B6": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          }
+        },
+        "paired_vectors": {
+          "vector_1": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 46,
+            "fp": 13,
+            "tn": 27,
+            "fn": 14,
+            "recall": 0.7666666666666667,
+            "recall_ci_95": [
+              0.6456372962239805,
+              0.8556043826335717
+            ],
+            "fpr": 0.325,
+            "fpr_ci_95": [
+              0.200845022317827,
+              0.47982253810122333
+            ],
+            "precision": 0.7796610169491526,
+            "f1": 0.773109243697479,
+            "accuracy": 0.73,
+            "auroc": 0.6829166666666666,
+            "pr_auc": 0.7377401129943504
+          },
+          "vector_2": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 10,
+            "fp": 0,
+            "tn": 40,
+            "fn": 50,
+            "recall": 0.16666666666666666,
+            "recall_ci_95": [
+              0.0931317697919145,
+              0.2803161316361453
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 1.0,
+            "f1": 0.2857142857142857,
+            "accuracy": 0.5,
+            "auroc": 0.5833333333333334,
+            "pr_auc": 0.6666666666666666
+          },
+          "vector_3": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 45,
+            "fp": 0,
+            "tn": 40,
+            "fn": 15,
+            "recall": 0.75,
+            "recall_ci_95": [
+              0.6276792992295218,
+              0.8422347746994333
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 1.0,
+            "f1": 0.8571428571428571,
+            "accuracy": 0.85,
+            "auroc": 0.875,
+            "pr_auc": 0.9
+          },
+          "vector_4": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 60,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.06017185214208986
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.4,
+            "auroc": 0.5,
+            "pr_auc": 0.6
+          },
+          "vector_5": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 10,
+            "fp": 13,
+            "tn": 27,
+            "fn": 50,
+            "recall": 0.16666666666666666,
+            "recall_ci_95": [
+              0.0931317697919145,
+              0.2803161316361453
+            ],
+            "fpr": 0.325,
+            "fpr_ci_95": [
+              0.200845022317827,
+              0.47982253810122333
+            ],
+            "precision": 0.43478260869565216,
+            "f1": 0.24096385542168672,
+            "accuracy": 0.37,
+            "auroc": 0.42083333333333334,
+            "pr_auc": 0.572463768115942
+          },
+          "vector_6": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 30,
+            "fp": 0,
+            "tn": 40,
+            "fn": 30,
+            "recall": 0.5,
+            "recall_ci_95": [
+              0.3773502424155577,
+              0.6226497575844423
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 1.0,
+            "f1": 0.6666666666666666,
+            "accuracy": 0.7,
+            "auroc": 0.6875,
+            "pr_auc": 0.8
+          }
+        }
+      },
+      "hard": {
+        "overall": {
+          "total": 600,
+          "positives": 360,
+          "negatives": 240,
+          "tp": 141,
+          "fp": 26,
+          "tn": 214,
+          "fn": 219,
+          "recall": 0.39166666666666666,
+          "recall_ci_95": [
+            0.3426416217353609,
+            0.4429792905905227
+          ],
+          "fpr": 0.10833333333333334,
+          "fpr_ci_95": [
+            0.07500858950999717,
+            0.15399864777755726
+          ],
+          "precision": 0.844311377245509,
+          "f1": 0.5351043643263756,
+          "accuracy": 0.5916666666666667,
+          "auroc": 0.6125173611111111,
+          "pr_auc": 0.6956886227544911
+        },
+        "per_vector": {
+          "V1": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 46,
+            "fp": 0,
+            "tn": 0,
+            "fn": 14,
+            "recall": 0.7666666666666667,
+            "recall_ci_95": [
+              0.6456372962239805,
+              0.8556043826335717
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 0.8679245283018869,
+            "accuracy": 0.7666666666666667,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B1": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 13,
+            "tn": 27,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.325,
+            "fpr_ci_95": [
+              0.200845022317827,
+              0.47982253810122333
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.675,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V2": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 10,
+            "fp": 0,
+            "tn": 0,
+            "fn": 50,
+            "recall": 0.16666666666666666,
+            "recall_ci_95": [
+              0.0931317697919145,
+              0.2803161316361453
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 0.2857142857142857,
+            "accuracy": 0.16666666666666666,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B2": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V3": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 45,
+            "fp": 0,
+            "tn": 0,
+            "fn": 15,
+            "recall": 0.75,
+            "recall_ci_95": [
+              0.6276792992295218,
+              0.8422347746994333
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 0.8571428571428571,
+            "accuracy": 0.75,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B3": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V4": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 0,
+            "fp": 0,
+            "tn": 0,
+            "fn": 60,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.06017185214208986
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B4": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V5": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 10,
+            "fp": 0,
+            "tn": 0,
+            "fn": 50,
+            "recall": 0.16666666666666666,
+            "recall_ci_95": [
+              0.0931317697919145,
+              0.2803161316361453
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 0.2857142857142857,
+            "accuracy": 0.16666666666666666,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B5": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 13,
+            "tn": 27,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.325,
+            "fpr_ci_95": [
+              0.200845022317827,
+              0.47982253810122333
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.675,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V6": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 30,
+            "fp": 0,
+            "tn": 0,
+            "fn": 30,
+            "recall": 0.5,
+            "recall_ci_95": [
+              0.3773502424155577,
+              0.6226497575844423
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 0.6666666666666666,
+            "accuracy": 0.5,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B6": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          }
+        },
+        "paired_vectors": {
+          "vector_1": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 46,
+            "fp": 13,
+            "tn": 27,
+            "fn": 14,
+            "recall": 0.7666666666666667,
+            "recall_ci_95": [
+              0.6456372962239805,
+              0.8556043826335717
+            ],
+            "fpr": 0.325,
+            "fpr_ci_95": [
+              0.200845022317827,
+              0.47982253810122333
+            ],
+            "precision": 0.7796610169491526,
+            "f1": 0.773109243697479,
+            "accuracy": 0.73,
+            "auroc": 0.6829166666666666,
+            "pr_auc": 0.7377401129943504
+          },
+          "vector_2": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 10,
+            "fp": 0,
+            "tn": 40,
+            "fn": 50,
+            "recall": 0.16666666666666666,
+            "recall_ci_95": [
+              0.0931317697919145,
+              0.2803161316361453
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 1.0,
+            "f1": 0.2857142857142857,
+            "accuracy": 0.5,
+            "auroc": 0.5833333333333334,
+            "pr_auc": 0.6666666666666666
+          },
+          "vector_3": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 45,
+            "fp": 0,
+            "tn": 40,
+            "fn": 15,
+            "recall": 0.75,
+            "recall_ci_95": [
+              0.6276792992295218,
+              0.8422347746994333
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 1.0,
+            "f1": 0.8571428571428571,
+            "accuracy": 0.85,
+            "auroc": 0.875,
+            "pr_auc": 0.9
+          },
+          "vector_4": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 60,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.06017185214208986
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.4,
+            "auroc": 0.5,
+            "pr_auc": 0.6
+          },
+          "vector_5": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 10,
+            "fp": 13,
+            "tn": 27,
+            "fn": 50,
+            "recall": 0.16666666666666666,
+            "recall_ci_95": [
+              0.0931317697919145,
+              0.2803161316361453
+            ],
+            "fpr": 0.325,
+            "fpr_ci_95": [
+              0.200845022317827,
+              0.47982253810122333
+            ],
+            "precision": 0.43478260869565216,
+            "f1": 0.24096385542168672,
+            "accuracy": 0.37,
+            "auroc": 0.42083333333333334,
+            "pr_auc": 0.572463768115942
+          },
+          "vector_6": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 30,
+            "fp": 0,
+            "tn": 40,
+            "fn": 30,
+            "recall": 0.5,
+            "recall_ci_95": [
+              0.3773502424155577,
+              0.6226497575844423
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 1.0,
+            "f1": 0.6666666666666666,
+            "accuracy": 0.7,
+            "auroc": 0.6875,
+            "pr_auc": 0.8
+          }
+        }
+      }
+    },
+    {
+      "contender_id": "stateless-regex-policy",
+      "total_traces": 600,
+      "error_count": 0,
+      "cold_start_ms": 0.000323,
+      "peak_rss_mb": 31.9609375,
+      "latency_p50_ms": 0.349408,
+      "latency_p95_ms": 0.40777264999999996,
+      "latency_mean_ms": 0.33011359,
+      "latency_max_ms": 0.43531,
+      "protective": {
+        "overall": {
+          "total": 600,
+          "positives": 360,
+          "negatives": 240,
+          "tp": 175,
+          "fp": 13,
+          "tn": 227,
+          "fn": 185,
+          "recall": 0.4861111111111111,
+          "recall_ci_95": [
+            0.43490116345061414,
+            0.5376143381296273
+          ],
+          "fpr": 0.05416666666666667,
+          "fpr_ci_95": [
+            0.031925187796296654,
+            0.09045539081825996
+          ],
+          "precision": 0.9308510638297872,
+          "f1": 0.6386861313868614,
+          "accuracy": 0.67,
+          "auroc": 0.7159722222222222,
+          "pr_auc": 0.760830378250591
+        },
+        "per_vector": {
+          "V1": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 30,
+            "fp": 0,
+            "tn": 0,
+            "fn": 30,
+            "recall": 0.5,
+            "recall_ci_95": [
+              0.3773502424155577,
+              0.6226497575844423
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 0.6666666666666666,
+            "accuracy": 0.5,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B1": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V2": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 15,
+            "fp": 0,
+            "tn": 0,
+            "fn": 45,
+            "recall": 0.25,
+            "recall_ci_95": [
+              0.15776522530056675,
+              0.37232070077047824
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 0.4,
+            "accuracy": 0.25,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B2": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V3": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 45,
+            "fp": 0,
+            "tn": 0,
+            "fn": 15,
+            "recall": 0.75,
+            "recall_ci_95": [
+              0.6276792992295218,
+              0.8422347746994333
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 0.8571428571428571,
+            "accuracy": 0.75,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B3": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V4": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 0,
+            "fp": 0,
+            "tn": 0,
+            "fn": 60,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.06017185214208986
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B4": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V5": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 40,
+            "fp": 0,
+            "tn": 0,
+            "fn": 20,
+            "recall": 0.6666666666666666,
+            "recall_ci_95": [
+              0.5405686645211968,
+              0.7727073847647731
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 0.8,
+            "accuracy": 0.6666666666666666,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B5": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 13,
+            "tn": 27,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.325,
+            "fpr_ci_95": [
+              0.200845022317827,
+              0.47982253810122333
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.675,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V6": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 45,
+            "fp": 0,
+            "tn": 0,
+            "fn": 15,
+            "recall": 0.75,
+            "recall_ci_95": [
+              0.6276792992295218,
+              0.8422347746994333
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 0.8571428571428571,
+            "accuracy": 0.75,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B6": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          }
+        },
+        "paired_vectors": {
+          "vector_1": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 30,
+            "fp": 0,
+            "tn": 40,
+            "fn": 30,
+            "recall": 0.5,
+            "recall_ci_95": [
+              0.3773502424155577,
+              0.6226497575844423
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 1.0,
+            "f1": 0.6666666666666666,
+            "accuracy": 0.7,
+            "auroc": 0.75,
+            "pr_auc": 0.8
+          },
+          "vector_2": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 15,
+            "fp": 0,
+            "tn": 40,
+            "fn": 45,
+            "recall": 0.25,
+            "recall_ci_95": [
+              0.15776522530056675,
+              0.37232070077047824
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 1.0,
+            "f1": 0.4,
+            "accuracy": 0.55,
+            "auroc": 0.625,
+            "pr_auc": 0.7
+          },
+          "vector_3": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 45,
+            "fp": 0,
+            "tn": 40,
+            "fn": 15,
+            "recall": 0.75,
+            "recall_ci_95": [
+              0.6276792992295218,
+              0.8422347746994333
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 1.0,
+            "f1": 0.8571428571428571,
+            "accuracy": 0.85,
+            "auroc": 0.875,
+            "pr_auc": 0.9
+          },
+          "vector_4": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 60,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.06017185214208986
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.4,
+            "auroc": 0.5,
+            "pr_auc": 0.6
+          },
+          "vector_5": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 40,
+            "fp": 13,
+            "tn": 27,
+            "fn": 20,
+            "recall": 0.6666666666666666,
+            "recall_ci_95": [
+              0.5405686645211968,
+              0.7727073847647731
+            ],
+            "fpr": 0.325,
+            "fpr_ci_95": [
+              0.200845022317827,
+              0.47982253810122333
+            ],
+            "precision": 0.7547169811320755,
+            "f1": 0.7079646017699115,
+            "accuracy": 0.67,
+            "auroc": 0.6708333333333333,
+            "pr_auc": 0.7031446540880504
+          },
+          "vector_6": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 45,
+            "fp": 0,
+            "tn": 40,
+            "fn": 15,
+            "recall": 0.75,
+            "recall_ci_95": [
+              0.6276792992295218,
+              0.8422347746994333
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 1.0,
+            "f1": 0.8571428571428571,
+            "accuracy": 0.85,
+            "auroc": 0.875,
+            "pr_auc": 0.9
+          }
+        }
+      },
+      "hard": {
+        "overall": {
+          "total": 600,
+          "positives": 360,
+          "negatives": 240,
+          "tp": 175,
+          "fp": 13,
+          "tn": 227,
+          "fn": 185,
+          "recall": 0.4861111111111111,
+          "recall_ci_95": [
+            0.43490116345061414,
+            0.5376143381296273
+          ],
+          "fpr": 0.05416666666666667,
+          "fpr_ci_95": [
+            0.031925187796296654,
+            0.09045539081825996
+          ],
+          "precision": 0.9308510638297872,
+          "f1": 0.6386861313868614,
+          "accuracy": 0.67,
+          "auroc": 0.7159722222222222,
+          "pr_auc": 0.760830378250591
+        },
+        "per_vector": {
+          "V1": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 30,
+            "fp": 0,
+            "tn": 0,
+            "fn": 30,
+            "recall": 0.5,
+            "recall_ci_95": [
+              0.3773502424155577,
+              0.6226497575844423
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 0.6666666666666666,
+            "accuracy": 0.5,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B1": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V2": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 15,
+            "fp": 0,
+            "tn": 0,
+            "fn": 45,
+            "recall": 0.25,
+            "recall_ci_95": [
+              0.15776522530056675,
+              0.37232070077047824
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 0.4,
+            "accuracy": 0.25,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B2": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V3": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 45,
+            "fp": 0,
+            "tn": 0,
+            "fn": 15,
+            "recall": 0.75,
+            "recall_ci_95": [
+              0.6276792992295218,
+              0.8422347746994333
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 0.8571428571428571,
+            "accuracy": 0.75,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B3": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V4": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 0,
+            "fp": 0,
+            "tn": 0,
+            "fn": 60,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.06017185214208986
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B4": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V5": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 40,
+            "fp": 0,
+            "tn": 0,
+            "fn": 20,
+            "recall": 0.6666666666666666,
+            "recall_ci_95": [
+              0.5405686645211968,
+              0.7727073847647731
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 0.8,
+            "accuracy": 0.6666666666666666,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B5": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 13,
+            "tn": 27,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.325,
+            "fpr_ci_95": [
+              0.200845022317827,
+              0.47982253810122333
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.675,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "V6": {
+            "total": 60,
+            "positives": 60,
+            "negatives": 0,
+            "tp": 45,
+            "fp": 0,
+            "tn": 0,
+            "fn": 15,
+            "recall": 0.75,
+            "recall_ci_95": [
+              0.6276792992295218,
+              0.8422347746994333
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.0
+            ],
+            "precision": 1.0,
+            "f1": 0.8571428571428571,
+            "accuracy": 0.75,
+            "auroc": null,
+            "pr_auc": null
+          },
+          "B6": {
+            "total": 40,
+            "positives": 0,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 0,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.0
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 1.0,
+            "auroc": null,
+            "pr_auc": null
+          }
+        },
+        "paired_vectors": {
+          "vector_1": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 30,
+            "fp": 0,
+            "tn": 40,
+            "fn": 30,
+            "recall": 0.5,
+            "recall_ci_95": [
+              0.3773502424155577,
+              0.6226497575844423
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 1.0,
+            "f1": 0.6666666666666666,
+            "accuracy": 0.7,
+            "auroc": 0.75,
+            "pr_auc": 0.8
+          },
+          "vector_2": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 15,
+            "fp": 0,
+            "tn": 40,
+            "fn": 45,
+            "recall": 0.25,
+            "recall_ci_95": [
+              0.15776522530056675,
+              0.37232070077047824
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 1.0,
+            "f1": 0.4,
+            "accuracy": 0.55,
+            "auroc": 0.625,
+            "pr_auc": 0.7
+          },
+          "vector_3": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 45,
+            "fp": 0,
+            "tn": 40,
+            "fn": 15,
+            "recall": 0.75,
+            "recall_ci_95": [
+              0.6276792992295218,
+              0.8422347746994333
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 1.0,
+            "f1": 0.8571428571428571,
+            "accuracy": 0.85,
+            "auroc": 0.875,
+            "pr_auc": 0.9
+          },
+          "vector_4": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 0,
+            "fp": 0,
+            "tn": 40,
+            "fn": 60,
+            "recall": 0.0,
+            "recall_ci_95": [
+              0.0,
+              0.06017185214208986
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 0.0,
+            "f1": 0.0,
+            "accuracy": 0.4,
+            "auroc": 0.5,
+            "pr_auc": 0.6
+          },
+          "vector_5": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 40,
+            "fp": 13,
+            "tn": 27,
+            "fn": 20,
+            "recall": 0.6666666666666666,
+            "recall_ci_95": [
+              0.5405686645211968,
+              0.7727073847647731
+            ],
+            "fpr": 0.325,
+            "fpr_ci_95": [
+              0.200845022317827,
+              0.47982253810122333
+            ],
+            "precision": 0.7547169811320755,
+            "f1": 0.7079646017699115,
+            "accuracy": 0.67,
+            "auroc": 0.6708333333333333,
+            "pr_auc": 0.7031446540880504
+          },
+          "vector_6": {
+            "total": 100,
+            "positives": 60,
+            "negatives": 40,
+            "tp": 45,
+            "fp": 0,
+            "tn": 40,
+            "fn": 15,
+            "recall": 0.75,
+            "recall_ci_95": [
+              0.6276792992295218,
+              0.8422347746994333
+            ],
+            "fpr": 0.0,
+            "fpr_ci_95": [
+              0.0,
+              0.08762160119728664
+            ],
+            "precision": 1.0,
+            "f1": 0.8571428571428571,
+            "accuracy": 0.85,
+            "auroc": 0.875,
+            "pr_auc": 0.9
+          }
+        }
+      }
+    }
+  ]
+}
