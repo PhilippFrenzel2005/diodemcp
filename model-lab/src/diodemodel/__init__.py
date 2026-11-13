@@ -130,6 +130,10 @@ if TYPE_CHECKING:
         save_atomic_checkpoint,
         train_one_epoch,
     )
+    from diodemodel.wire_augment import (
+        build_curated_retrain_parquet_splits,
+        generate_wire_augmentation_pairs,
+    )
 
 _LAZY_EXPORTS: dict[str, str] = {
     "ALLOWED_SEED_LICENSES": "diodemodel.parse_seeds",
@@ -217,6 +221,8 @@ _LAZY_EXPORTS: dict[str, str] = {
     "measure_ort_cpu_latency": "diodemodel.benchmark_suite",
     "run_bundle_benchmark": "diodemodel.benchmark_suite",
     "run_multi_bundle_benchmark": "diodemodel.benchmark_suite",
+    "build_curated_retrain_parquet_splits": "diodemodel.wire_augment",
+    "generate_wire_augmentation_pairs": "diodemodel.wire_augment",
 }
 
 
@@ -276,6 +282,7 @@ __all__ = [
     "audit_packed_splits",
     "bake_onnx_logit_temperatures",
     "brier_loss",
+    "build_curated_retrain_parquet_splits",
     "build_disjoint_dataset_splits",
     "build_jev_tokenizer",
     "build_reference_4d_attn_mask",
@@ -300,6 +307,7 @@ __all__ = [
     "flatten_call_arguments",
     "format_benchmark_comparison_table",
     "generate_programmatic_pairs",
+    "generate_wire_augmentation_pairs",
     "get_or_create_vllm_completion_fn",
     "iter_matched_vllm_pairs",
     "load_checkpoint",

@@ -76,6 +76,8 @@ ONNX_INPUT_NAMES: Final[tuple[str, ...]] = tuple(ONNX_INPUT_SPECS.keys())
 ONNX_OUTPUT_NAMES: Final[tuple[str, ...]] = tuple(ONNX_OUTPUT_SPECS.keys())
 QUANTIZE_OP_TYPES: Final[tuple[str, ...]] = ("MatMul", "Gemm")
 HEAD_EXCLUSION_SCOPES: Final[tuple[str, ...]] = (*HEAD_SCOPE_NAMES, "logit_temperatures")
+TWO_GIB_BYTES: Final[int] = 2 * 1024 * 1024 * 1024
+DOWN_PROJ_SUBSTRINGS: Final[tuple[str, ...]] = ("mlp/down_proj", "mlp.down_proj")
 
 
 @dataclass(frozen=True)
@@ -89,11 +91,102 @@ class ExportBundleConfig:
     opset_version: int = ONNX_OPSET_VERSION
     weight_type: QuantType = QuantType.QInt8
     per_channel: bool = True
+    reduce_range: bool = False
     calib_batch_size: int = 16
     calib_buckets: tuple[int, ...] = CURRICULUM_BUCKETS
+    calib_max_rows: int | None = None
+    flip_max_rows: int | None = None
+    min_temp: float = 0.0
+    max_flip_rate: float | None = None
     num_ece_bins: int = DEFAULT_ECE_BINS
     intra_op_threads: int = 4
     keep_fp32_onnx: bool = False
+
+
+def _is_attack_calib_row(row: Mapping[str, Any] | PackedJevRow) -> bool:
+    if isinstance(row, PackedJevRow):
+        return max(float(row.y_enc), float(row.y_sem), float(row.y_hijack)) > 0.5
+    if "noul_targets" in row:
+        return max(float(v) for v in row["noul_targets"]) > 0.5
+    return (
+        max(
+            float(row.get("y_enc", 0.0)),
+            float(row.get("y_sem", 0.0)),
+            float(row.get("y_hijack", 0.0)),
+        )
+        > 0.5
+    )
+
+
+def _calib_row_unpadded_length(row: Mapping[str, Any] | PackedJevRow) -> int:
+    if isinstance(row, PackedJevRow):
+        return int(row.unpadded_length)
+    return int(row.get("unpadded_length", len(row.get("input_ids", ()))))
+
+
+def select_stratified_calib_rows(
+    rows: Sequence[Mapping[str, Any] | PackedJevRow],
+    *,
+    max_rows: int,
+    max_bucket_len: int,
+) -> list[Mapping[str, Any] | PackedJevRow]:
+    """Select an interleaved, balanced attack/benign calibration subset within ``max_bucket_len``."""
+    eligible = [r for r in rows if _calib_row_unpadded_length(r) <= max_bucket_len]
+    if not eligible:
+        eligible = list(rows)
+    if max_rows <= 0 or len(eligible) <= max_rows:
+        atk_all = [r for r in eligible if _is_attack_calib_row(r)]
+        ben_all = [r for r in eligible if not _is_attack_calib_row(r)]
+    else:
+        target_atk = max_rows // 2
+        target_ben = max_rows - target_atk
+        atk_pool = [r for r in eligible if _is_attack_calib_row(r)]
+        ben_pool = [r for r in eligible if not _is_attack_calib_row(r)]
+        atk_all = atk_pool[:target_atk]
+        ben_all = ben_pool[:target_ben]
+        if len(atk_all) < target_atk:
+            extra = target_atk - len(atk_all)
+            ben_all = ben_pool[: target_ben + extra]
+        elif len(ben_all) < target_ben:
+            extra = target_ben - len(ben_all)
+            atk_all = atk_pool[: target_atk + extra]
+
+    interleaved: list[Mapping[str, Any] | PackedJevRow] = []
+    for idx in range(max(len(atk_all), len(ben_all))):
+        if idx < len(atk_all):
+            interleaved.append(atk_all[idx])
+        if idx < len(ben_all):
+            interleaved.append(ben_all[idx])
+    return interleaved
+
+
+def collect_nodes_with_substrings(
+    model_or_path: onnx.ModelProto | Path | str,
+    substrings: Sequence[str],
+) -> list[str]:
+    """Return quantizable ONNX node names (and ORT ``_MatMul`` aliases) matching any substring."""
+    if not substrings:
+        return []
+    needles = tuple(s.lower() for s in substrings if s)
+    if not needles:
+        return []
+    proto = (
+        onnx.load(str(model_or_path), load_external_data=False)
+        if isinstance(model_or_path, (str, Path))
+        else model_or_path
+    )
+    matched: list[str] = []
+    seen: set[str] = set()
+    for node in proto.graph.node:
+        if node.op_type not in QUANTIZE_OP_TYPES:
+            continue
+        haystack = " ".join((node.name, *node.input, *node.output)).lower()
+        if any(needle in haystack for needle in needles):
+            for candidate in (node.name, f"{node.name}_MatMul"):
+                if candidate and candidate not in seen:
+                    seen.add(candidate)
+                    matched.append(candidate)
+    return matched
 
 
 def make_dummy_export_batch(
@@ -262,8 +355,10 @@ def export_fp32_onnx(
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     was_training = model.training
-    orig_device = next(model.parameters()).device
-    cpu_model = model.to("cpu").eval()
+    first_param = next(model.parameters())
+    orig_device = first_param.device
+    orig_dtype = first_param.dtype
+    cpu_model = model.to(device="cpu", dtype=torch.float32).eval()
     try:
         vocab_size = int(cpu_model.backbone.get_input_embeddings().num_embeddings)
         pad_id = int(getattr(cpu_model.backbone.config, "pad_token_id", 0) or 0)
@@ -293,7 +388,7 @@ def export_fp32_onnx(
                 dynamo=False,
             )
     finally:
-        model.to(orig_device)
+        model.to(device=orig_device, dtype=orig_dtype)
         if was_training:
             model.train()
 
@@ -312,25 +407,39 @@ def quantize_onnx_matmul_int8(
     *,
     weight_type: QuantType = QuantType.QInt8,
     per_channel: bool = True,
+    reduce_range: bool = False,
+    extra_excluded_substrings: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Quantize ONLY backbone ``MatMul`` and ``Gemm`` weight projections to INT8 while keeping
     ``LayerNorm``, ``Softmax``, 4D mask ops, and ``HEAD_SCOPE_NAMES`` in pure FP32 (`I8`)."""
     src_path = Path(fp32_onnx_path)
     dst_path = Path(int8_onnx_path)
     dst_path.parent.mkdir(parents=True, exist_ok=True)
+    if src_path.resolve() != dst_path.resolve():
+        for leftover in dst_path.parent.glob(f"{dst_path.name}*"):
+            if leftover.is_file():
+                leftover.unlink()
 
     fp32_proto = onnx.load(str(src_path), load_external_data=False)
     add_pre_process_metadata(fp32_proto)
     pin_onnx_output_shapes(fp32_proto)
     onnx.save(fp32_proto, str(src_path))
 
-    nodes_to_exclude = collect_excluded_onnx_nodes(fp32_proto)
+    base_excluded = collect_excluded_onnx_nodes(fp32_proto)
+    extra_excluded = collect_nodes_with_substrings(fp32_proto, extra_excluded_substrings)
+    seen_excl = set(base_excluded)
+    nodes_to_exclude = list(base_excluded)
+    for name in extra_excluded:
+        if name not in seen_excl:
+            seen_excl.add(name)
+            nodes_to_exclude.append(name)
+
     quantize_dynamic(
         model_input=src_path,
         model_output=dst_path,
         op_types_to_quantize=list(QUANTIZE_OP_TYPES),
         per_channel=per_channel,
-        reduce_range=False,
+        reduce_range=reduce_range,
         weight_type=weight_type,
         nodes_to_exclude=nodes_to_exclude,
         extra_options={"MatMulConstBOnly": True},
@@ -342,6 +451,17 @@ def quantize_onnx_matmul_int8(
     onnx.save(q_proto, str(dst_path))
     validate_onnx_contract(dst_path)
 
+    for init in q_proto.graph.initializer:
+        if init.data_location == TensorProto.EXTERNAL:
+            raise ValueError(
+                f"INT8 ONNX initializer {init.name!r} uses external data; single-file <2 GiB bundle required"
+            )
+    onnx_bytes = int(dst_path.stat().st_size)
+    if onnx_bytes >= TWO_GIB_BYTES:
+        raise ValueError(
+            f"Quantized model_int8.onnx size ({onnx_bytes} bytes) exceeds 2 GiB single-file limit"
+        )
+
     quantized_matmul_nodes = [
         n.name for n in q_proto.graph.node if n.op_type == "MatMulInteger"
     ]
@@ -352,9 +472,12 @@ def quantize_onnx_matmul_int8(
         "op_types_to_quantize": list(QUANTIZE_OP_TYPES),
         "weight_type": str(weight_type),
         "per_channel": bool(per_channel),
+        "reduce_range": bool(reduce_range),
         "nodes_to_exclude": nodes_to_exclude,
+        "extra_excluded_nodes": extra_excluded,
         "quantized_matmul_nodes": quantized_matmul_nodes,
         "dynamic_quantize_linear_nodes": dql_nodes,
+        "onnx_bytes": onnx_bytes,
     }
 
 
@@ -700,6 +823,72 @@ def calibrate_int8_onnx_temperatures(
     }
 
 
+def _apply_min_temperature_floor(
+    int8_onnx_path: Path | str,
+    cal_res: dict[str, Any],
+    *,
+    min_temp: float,
+    explicit_thresholds: Mapping[str, float] | None = None,
+) -> dict[str, Any]:
+    """Clamp post-INT8 temperatures at ``min_temp``, re-bake ONNX weights, and refresh metrics."""
+    payload = dict(cal_res["calibration_payload"])
+    if min_temp > 0.0:
+        payload["min_temp"] = float(min_temp)
+    fitted_temps: torch.Tensor = cal_res["fitted_temperatures"]
+
+    if min_temp > 0.0 and bool((fitted_temps < float(min_temp)).any()):
+        clamped_temps = torch.clamp(fitted_temps, min=float(min_temp))
+        bake_onnx_logit_temperatures(int8_onnx_path, clamped_temps)
+
+        int8_raw_logits: torch.Tensor = cal_res["int8_raw_logits"]
+        val_targets: torch.Tensor = cal_res["val_targets"]
+        calib_rep = temperature_calibration_report(
+            int8_raw_logits,
+            val_targets,
+            clamped_temps,
+            num_bins=int(payload["num_bins"]),
+        )
+        y_f64 = val_targets.double()
+        p_calibrated = torch.sigmoid(int8_raw_logits.double() / clamped_temps.double())
+        brier_after = [
+            float(((p_calibrated[:, h] - y_f64[:, h]) ** 2).mean().item())
+            for h in range(NUM_NOUL_HEADS)
+        ]
+        fitted_thresh_info = fit_data_thresholds(p_calibrated, val_targets)
+        fitted_pair = {
+            "warn_min": fitted_thresh_info["warn_min"],
+            "critical_min": fitted_thresh_info["critical_min"],
+        }
+        t_list = [float(x) for x in clamped_temps.detach().cpu().tolist()]
+        payload["unclamped_temperatures"] = list(payload["temperatures"])
+        payload["temperatures"] = t_list
+        payload["temperatures_by_head"] = {
+            "T_enc": t_list[0],
+            "T_sem": t_list[1],
+            "T_hijack": t_list[2],
+        }
+        payload["ece_before"] = [float(x) for x in calib_rep["ece_before"]]
+        payload["ece_after"] = [float(x) for x in calib_rep["ece_after"]]
+        payload["ece_val"] = float(calib_rep["ece_val"])
+        payload["brier_after"] = brier_after
+        payload["brier_val"] = float(np.mean(brier_after))
+        payload["nll_after"] = [float(x) for x in calib_rep["nll_after"]]
+        payload["nll_val"] = float(np.mean(calib_rep["nll_after"]))
+        payload["thresholds"] = (
+            dict(explicit_thresholds) if explicit_thresholds is not None else dict(fitted_pair)
+        )
+        payload["fitted_thresholds"] = fitted_pair
+        payload["per_head_thresholds"] = fitted_thresh_info["per_head_thresholds"]
+
+        cal_res = dict(cal_res)
+        cal_res["fitted_temperatures"] = clamped_temps
+        cal_res["report"] = calib_rep
+
+    cal_res = dict(cal_res)
+    cal_res["calibration_payload"] = payload
+    return cal_res
+
+
 def _materialize_bundle_tokenizer(
     tokenizer_source: Path | str | Tokenizer | PreTrainedTokenizerBase,
     target_tokenizer_json: Path,
@@ -769,8 +958,14 @@ def export_diode_bundle(
     opset_version: int = ONNX_OPSET_VERSION,
     weight_type: QuantType = QuantType.QInt8,
     per_channel: bool = True,
+    reduce_range: bool = False,
     calib_batch_size: int = 16,
     calib_buckets: Sequence[int] = CURRICULUM_BUCKETS,
+    calib_max_rows: int | None = None,
+    flip_max_rows: int | None = None,
+    min_temp: float = 0.0,
+    max_flip_rate: float | None = None,
+    extra_excluded_substrings: Sequence[str] = (),
     num_ece_bins: int = DEFAULT_ECE_BINS,
     intra_op_threads: int = 4,
     keep_fp32_onnx: bool = False,
@@ -783,10 +978,11 @@ def export_diode_bundle(
     2. Exports ``model`` in eager mode with ``dynamo=False, opset_version=17`` and pins static output shapes.
     3. Quantizes ONLY backbone ``MatMul`` and ``Gemm`` weight projections to INT8 (`model_int8.onnx`) while
        excluding ``HEAD_SCOPE_NAMES`` (``/noul_head``, ``/src_pointer``, ``/arg_pointer``), ``logit_temperatures``,
-       4D mask ops, ``LayerNorm``, and ``Softmax``.
+       4D mask ops, ``LayerNorm``, and ``Softmax`` (with optional automatic ``mlp.down_proj`` outlier fallback
+       when ``max_flip_rate`` is set).
     4. Runs ``val_calib_rows`` through the quantized INT8 ORT session, inverts probabilities to recover
        post-INT8 pre-temperature logits, fits ``(T_enc, T_sem, T_hijack)`` via ``fit_temperature_scaling``,
-       and bakes the fitted FP32 temperatures into ``model_int8.onnx``.
+       applies optional ``min_temp`` clamping, and bakes the fitted FP32 temperatures into ``model_int8.onnx``.
     5. Writes ``calibration.json`` and ``manifest.json`` (computing ``sha256_model_onnx``,
        ``sha256_tokenizer_json``, and ``sha256_calibration_json`` AFTER baking temperatures) and validates
        the bundle with ``contract.validate_bundle_dir(bundle_dir, verify_sha256=True)``.
@@ -799,8 +995,13 @@ def export_diode_bundle(
         opset_version = config.opset_version
         weight_type = config.weight_type
         per_channel = config.per_channel
+        reduce_range = config.reduce_range
         calib_batch_size = config.calib_batch_size
         calib_buckets = config.calib_buckets
+        calib_max_rows = config.calib_max_rows if calib_max_rows is None else calib_max_rows
+        flip_max_rows = config.flip_max_rows if flip_max_rows is None else flip_max_rows
+        min_temp = config.min_temp if min_temp == 0.0 else min_temp
+        max_flip_rate = config.max_flip_rate if max_flip_rate is None else max_flip_rate
         num_ece_bins = config.num_ece_bins
         intra_op_threads = config.intra_op_threads
         keep_fp32_onnx = config.keep_fp32_onnx
@@ -836,9 +1037,26 @@ def export_diode_bundle(
     int8_raw_logits: torch.Tensor | None = None
     val_targets: torch.Tensor | None = None
     explicit_thresholds = clamp_thresholds(dict(thresholds)) if thresholds is not None else None
+    eff_calib_buckets = tuple(sorted(int(b) for b in calib_buckets)) or CURRICULUM_BUCKETS
     loaded_calib_rows = (
         load_packed_jev_dataset(val_calib_rows) if val_calib_rows is not None else None
     )
+    if loaded_calib_rows is not None and calib_max_rows is not None and calib_max_rows > 0:
+        loaded_calib_rows = select_stratified_calib_rows(
+            loaded_calib_rows,
+            max_rows=int(calib_max_rows),
+            max_bucket_len=eff_calib_buckets[-1],
+        )
+    flip_eval_rows = (
+        loaded_calib_rows[: int(flip_max_rows)]
+        if (loaded_calib_rows is not None and flip_max_rows is not None and flip_max_rows > 0)
+        else loaded_calib_rows
+    )
+
+    eff_vocab = int(
+        getattr(getattr(getattr(export_model, "backbone", None), "config", None), "vocab_size", 64)
+    )
+    fallback_used = False
 
     with tempfile.TemporaryDirectory(prefix="diodemodel_fp32_") as tmp_dir:
         if keep_fp32_onnx:
@@ -853,87 +1071,132 @@ def export_diode_bundle(
             fp32_path,
             opset_version=opset_version,
         )
-        quant_info = quantize_onnx_matmul_int8(
-            fp32_path,
-            int8_onnx_path,
-            weight_type=weight_type,
-            per_channel=per_channel,
-        )
 
-        # 4. Post-INT8 temperature scaling on val_calib_rows
-        if loaded_calib_rows is not None:
-            calib_result = calibrate_int8_onnx_temperatures(
+        def _quantize_calibrate_and_check(
+            substrings: Sequence[str],
+        ) -> tuple[
+            dict[str, Any],
+            torch.Tensor,
+            dict[str, Any],
+            torch.Tensor | None,
+            torch.Tensor | None,
+            float,
+        ]:
+            q_info = quantize_onnx_matmul_int8(
+                fp32_path,
                 int8_onnx_path,
-                loaded_calib_rows,
-                batch_size=calib_batch_size,
-                calib_buckets=calib_buckets,
-                pad_token_id=pad_token_id,
-                num_bins=num_ece_bins,
-                thresholds=explicit_thresholds,
-                intra_op_threads=intra_op_threads,
+                weight_type=weight_type,
+                per_channel=per_channel,
+                reduce_range=reduce_range,
+                extra_excluded_substrings=substrings,
             )
-            fitted_temperatures: torch.Tensor = calib_result["fitted_temperatures"]
-            export_model.set_logit_temperatures(fitted_temperatures)
-            calibration_payload = calib_result["calibration_payload"]
-            int8_raw_logits = calib_result["int8_raw_logits"]
-            val_targets = calib_result["val_targets"]
-        else:
-            t_cur = read_onnx_logit_temperatures(int8_onnx_path)
-            fitted_temperatures = torch.from_numpy(t_cur.copy())
-            t_list = [float(x) for x in t_cur.tolist()]
-            fallback_thresh = (
-                explicit_thresholds
-                if explicit_thresholds is not None
-                else {"warn_min": 0.20, "critical_min": 0.80}
-            )
-            calibration_payload = {
-                "method": "temperature_scaling",
-                "post_int8_calibrated": False,
-                "temperatures": t_list,
-                "temperatures_by_head": {
-                    "T_enc": t_list[0],
-                    "T_sem": t_list[1],
-                    "T_hijack": t_list[2],
-                },
-                "previous_temperatures": t_list,
-                "ece_before": [0.0, 0.0, 0.0],
-                "ece_after": [0.0, 0.0, 0.0],
-                "ece_val": 0.0,
-                "brier_before": [0.0, 0.0, 0.0],
-                "brier_after": [0.0, 0.0, 0.0],
-                "brier_val": 0.0,
-                "nll_before": [0.0, 0.0, 0.0],
-                "nll_after": [0.0, 0.0, 0.0],
-                "nll_val": 0.0,
-                "num_bins": int(num_ece_bins),
-                "num_calibration_rows": 0,
-                "thresholds": fallback_thresh,
-                "per_head_thresholds": {
-                    "enc": dict(fallback_thresh),
-                    "sem": dict(fallback_thresh),
-                    "hijack": dict(fallback_thresh),
-                },
-            }
+            if loaded_calib_rows is not None:
+                c_res = calibrate_int8_onnx_temperatures(
+                    int8_onnx_path,
+                    loaded_calib_rows,
+                    batch_size=calib_batch_size,
+                    calib_buckets=eff_calib_buckets,
+                    pad_token_id=pad_token_id,
+                    num_bins=num_ece_bins,
+                    thresholds=explicit_thresholds,
+                    intra_op_threads=intra_op_threads,
+                )
+                if min_temp > 0.0:
+                    c_res = _apply_min_temperature_floor(
+                        int8_onnx_path,
+                        c_res,
+                        min_temp=min_temp,
+                        explicit_thresholds=explicit_thresholds,
+                    )
+                f_temps: torch.Tensor = c_res["fitted_temperatures"]
+                export_model.set_logit_temperatures(f_temps)
+                c_payload = dict(c_res["calibration_payload"])
+                z_raw: torch.Tensor | None = c_res["int8_raw_logits"]
+                y_tgt: torch.Tensor | None = c_res["val_targets"]
+            else:
+                t_cur = read_onnx_logit_temperatures(int8_onnx_path)
+                f_temps = torch.from_numpy(t_cur.copy())
+                t_list = [float(x) for x in t_cur.tolist()]
+                fallback_thresh = (
+                    explicit_thresholds
+                    if explicit_thresholds is not None
+                    else {"warn_min": 0.20, "critical_min": 0.80}
+                )
+                c_payload = {
+                    "method": "temperature_scaling",
+                    "post_int8_calibrated": False,
+                    "temperatures": t_list,
+                    "temperatures_by_head": {
+                        "T_enc": t_list[0],
+                        "T_sem": t_list[1],
+                        "T_hijack": t_list[2],
+                    },
+                    "previous_temperatures": t_list,
+                    "ece_before": [0.0, 0.0, 0.0],
+                    "ece_after": [0.0, 0.0, 0.0],
+                    "ece_val": 0.0,
+                    "brier_before": [0.0, 0.0, 0.0],
+                    "brier_after": [0.0, 0.0, 0.0],
+                    "brier_val": 0.0,
+                    "nll_before": [0.0, 0.0, 0.0],
+                    "nll_after": [0.0, 0.0, 0.0],
+                    "nll_val": 0.0,
+                    "num_bins": int(num_ece_bins),
+                    "num_calibration_rows": 0,
+                    "thresholds": fallback_thresh,
+                    "per_head_thresholds": {
+                        "enc": dict(fallback_thresh),
+                        "sem": dict(fallback_thresh),
+                        "hijack": dict(fallback_thresh),
+                    },
+                }
+                z_raw = None
+                y_tgt = None
 
-        eff_vocab = int(
-            getattr(getattr(getattr(export_model, "backbone", None), "config", None), "vocab_size", 64)
-        )
-        eff_thresh = calibration_payload["thresholds"]
-        fp32_int8_band_flip_rate = _compute_fp32_int8_band_flip_rate(
-            fp32_path,
-            int8_onnx_path,
-            loaded_calib_rows,
-            fitted_temperatures=fitted_temperatures,
-            warn_min=float(eff_thresh["warn_min"]),
-            critical_min=float(eff_thresh["critical_min"]),
-            batch_size=calib_batch_size,
-            calib_buckets=calib_buckets,
-            pad_token_id=pad_token_id,
-            intra_op_threads=intra_op_threads,
-            vocab_size=eff_vocab,
-        )
+            eff_t = c_payload["thresholds"]
+            flip_r = _compute_fp32_int8_band_flip_rate(
+                fp32_path,
+                int8_onnx_path,
+                flip_eval_rows,
+                fitted_temperatures=f_temps,
+                warn_min=float(eff_t["warn_min"]),
+                critical_min=float(eff_t["critical_min"]),
+                batch_size=calib_batch_size,
+                calib_buckets=eff_calib_buckets,
+                pad_token_id=pad_token_id,
+                intra_op_threads=intra_op_threads,
+                vocab_size=eff_vocab,
+            )
+            return q_info, f_temps, c_payload, z_raw, y_tgt, flip_r
+
+        (
+            quant_info,
+            fitted_temperatures,
+            calibration_payload,
+            int8_raw_logits,
+            val_targets,
+            fp32_int8_band_flip_rate,
+        ) = _quantize_calibrate_and_check(extra_excluded_substrings)
+
+        if (
+            max_flip_rate is not None
+            and fp32_int8_band_flip_rate > float(max_flip_rate)
+            and not any(s in extra_excluded_substrings for s in DOWN_PROJ_SUBSTRINGS)
+        ):
+            fallback_used = True
+            (
+                quant_info,
+                fitted_temperatures,
+                calibration_payload,
+                int8_raw_logits,
+                val_targets,
+                fp32_int8_band_flip_rate,
+            ) = _quantize_calibrate_and_check((*extra_excluded_substrings, *DOWN_PROJ_SUBSTRINGS))
+
         calibration_payload["fp32_int8_band_flip_rate"] = fp32_int8_band_flip_rate
         calibration_payload["per_channel"] = bool(per_channel)
+        calibration_payload["reduce_range"] = bool(reduce_range)
+        calibration_payload["down_proj_fallback_used"] = bool(fallback_used)
 
     clamped_thresh = clamp_thresholds(dict(calibration_payload["thresholds"]))
 
@@ -982,6 +1245,7 @@ def export_diode_bundle(
         "int8_raw_logits": int8_raw_logits,
         "val_targets": val_targets,
         "fp32_int8_band_flip_rate": fp32_int8_band_flip_rate,
+        "fallback_used": fallback_used,
     }
 
 
@@ -1057,6 +1321,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=4,
         help="ORT CPU intra-op threads during calibration.",
     )
+    parser.add_argument("--calib-max-rows", type=int, default=None)
+    parser.add_argument("--flip-max-rows", type=int, default=None)
+    parser.add_argument("--min-temp", type=float, default=0.0)
+    parser.add_argument("--max-flip-rate", type=float, default=None)
+    parser.add_argument("--calib-buckets", type=str, default=None)
+    parser.add_argument(
+        "--reduce-range",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use 7-bit reduce_range quantization (prevents AVX2 VPMADDUBSW overflow).",
+    )
     return parser
 
 
@@ -1103,27 +1378,41 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise ValueError(
             "--checkpoint, --tokenizer, and --output-dir are required when not running --smoke"
         )
+    parsed_buckets = (
+        tuple(int(x.strip()) for x in args.calib_buckets.split(",") if x.strip())
+        if args.calib_buckets
+        else CURRICULUM_BUCKETS
+    )
     export_diode_bundle(
         args.checkpoint,
         args.output_dir,
         tokenizer_source=args.tokenizer,
         model_id=args.model_id,
         val_calib_rows=args.val_parquet,
+        calib_buckets=parsed_buckets,
+        calib_max_rows=args.calib_max_rows,
+        flip_max_rows=args.flip_max_rows,
+        min_temp=args.min_temp,
+        max_flip_rate=args.max_flip_rate,
+        reduce_range=args.reduce_range,
         intra_op_threads=args.intra_op_threads,
     )
     return 0
 
 
 __all__ = [
+    "DOWN_PROJ_SUBSTRINGS",
     "ExportBundleConfig",
     "HEAD_EXCLUSION_SCOPES",
     "ONNX_INPUT_NAMES",
     "ONNX_OUTPUT_NAMES",
     "QUANTIZE_OP_TYPES",
+    "TWO_GIB_BYTES",
     "bake_onnx_logit_temperatures",
     "build_smoke_jev_tokenizer",
     "calibrate_int8_onnx_temperatures",
     "collect_excluded_onnx_nodes",
+    "collect_nodes_with_substrings",
     "create_ort_cpu_session",
     "export_diode_bundle",
     "export_fp32_onnx",
@@ -1132,6 +1421,7 @@ __all__ = [
     "quantize_onnx_int8",
     "quantize_onnx_matmul_int8",
     "read_onnx_logit_temperatures",
+    "select_stratified_calib_rows",
     "verify_onnx_no_bool_where",
 ]
 
