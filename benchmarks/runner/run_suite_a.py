@@ -312,6 +312,8 @@ def run_suite_a(
     repo_root: Path = DEFAULT_REPO_ROOT,
     warmup_count: int = 5,
     threads: int = 4,
+    merge_existing: bool = False,
+    ordered_ids: Sequence[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Run all Suite A contenders strictly sequentially and persist `suite_a_summary.json`."""
     summaries: list[dict[str, Any]] = []
@@ -330,11 +332,30 @@ def run_suite_a(
 
     output_dir.mkdir(parents=True, exist_ok=True)
     summary_path = output_dir / "suite_a_summary.json"
+    final_summaries = summaries
+    if merge_existing and summary_path.is_file():
+        try:
+            prev = json.loads(summary_path.read_text(encoding="utf-8")).get("suite_a", [])
+        except Exception:
+            prev = []
+        by_id: dict[str, dict[str, Any]] = {
+            str(item["contender_id"]): item for item in prev if isinstance(item, dict) and "contender_id" in item
+        }
+        for item in summaries:
+            by_id[str(item["contender_id"])] = item
+        if ordered_ids:
+            final_summaries = [by_id[cid] for cid in ordered_ids if cid in by_id]
+            for cid, item in by_id.items():
+                if cid not in ordered_ids:
+                    final_summaries.append(item)
+        else:
+            final_summaries = list(by_id.values())
+
     summary_path.write_text(
-        json.dumps({"suite_a": summaries}, indent=2, ensure_ascii=False),
+        json.dumps({"suite_a": final_summaries}, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
-    return summaries
+    return final_summaries
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -383,6 +404,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         repo_root=args.repo_root,
         warmup_count=args.warmup,
         threads=args.threads,
+        merge_existing=bool(args.contenders.strip()),
+        ordered_ids=[s.contender_id for s in all_specs],
     )
     return 0
 
