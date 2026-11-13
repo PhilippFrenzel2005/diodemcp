@@ -1198,4 +1198,170 @@ def test_ort_slim_tier0_plumbing_json_secrets_prose_paths_custom_db_and_rug_pull
     assert "[catalog_srv:sync_data:rug_pull_poisoned_tool]" in suspicious[0]
 
 
+def test_ort_predictor_aligns_per_head_thresholds_without_attenuating_tier0(
+    synthetic_jev_bundle_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Per-head thresholds in calibration.json align skewed neural heads (e.g. sem=0.912) to manifest bands."""
+    bundle_dir = tmp_path / "per_head_bundle"
+    bundle_dir.mkdir()
+    for name in REQUIRED_BUNDLE_FILES:
+        (bundle_dir / name).write_bytes((synthetic_jev_bundle_dir / name).read_bytes())
+
+    manifest_data = json.loads((bundle_dir / "manifest.json").read_text("utf-8"))
+    manifest_data["thresholds"] = {"warn_min": 0.16, "critical_min": 0.50}
+    cal_data = {
+        "ece_val": 0.012,
+        "thresholds": {"warn_min": 0.16, "critical_min": 0.50},
+        "per_head_thresholds": {
+            "enc": {"warn_min": 0.16, "critical_min": 0.50},
+            "sem": {"warn_min": 0.45, "critical_min": 0.912},
+            "hijack": {"warn_min": 0.16, "critical_min": 0.50},
+        },
+        "post_int8_val_diagnostics": {
+            "overall_benign_fpr_at_warn": 0.019,
+            "overall_benign_fpr_at_critical": 0.006,
+        },
+    }
+    cal_bytes = json.dumps(cal_data).encode("utf-8")
+    (bundle_dir / "calibration.json").write_bytes(cal_bytes)
+    manifest_data["sha256_calibration_json"] = hashlib.sha256(cal_bytes).hexdigest()
+    (bundle_dir / "manifest.json").write_text(json.dumps(manifest_data), encoding="utf-8")
+
+    predictor = OrtJevPredictor(bundle_dir, intra_op_threads=1)
+
+    # Mock session output: raw p_sem=0.80 is < sem.critical_min (0.912) and >= sem.warn_min (0.45),
+    # so aligned p_sem must land in WARN [0.16, 0.50), NOT CRITICAL (>= 0.50)!
+    def _mock_sem_80(_outputs: Any, _feed: Any) -> list[np.ndarray]:
+        noul = np.array([[0.01, 0.80, 0.01]], dtype=np.float32)
+        src = np.zeros((1, predictor.manifest.max_pchunks + 1), dtype=np.float32)
+        src[0, -1] = 1.0
+        arg = np.zeros((1, predictor.manifest.max_args + 1), dtype=np.float32)
+        arg[0, -1] = 1.0
+        return [noul, src, arg]
+
+    monkeypatch.setattr(predictor._session, "run", _mock_sem_80)
+
+    benign_b4_scores = predictor.evaluate(
+        intent="Verify base64 build digest and upload artifact checksum.",
+        private_spans=[
+            TaintSpan(
+                span_id="sp_hash",
+                source_label="dist/checksum.txt",
+                text="sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+                flags=CapabilityFlag.READS_PRIVATE,
+            )
+        ],
+        untrusted_spans=[],
+        call=CandidateCall(
+            server="http",
+            tool="post",
+            arguments={"url": "https://ci.internal/verify", "body": "digest_ok"},
+        ),
+    )
+    assert 0.16 <= benign_b4_scores.p_sem < 0.50
+
+    # Raw p_sem=0.30 is < sem.warn_min (0.45), so aligned p_sem must land in SAFE (< 0.16)!
+    def _mock_sem_30(_outputs: Any, _feed: Any) -> list[np.ndarray]:
+        noul = np.array([[0.0, 0.30, 0.0]], dtype=np.float32)
+        src = np.zeros((1, predictor.manifest.max_pchunks + 1), dtype=np.float32)
+        src[0, -1] = 1.0
+        arg = np.zeros((1, predictor.manifest.max_args + 1), dtype=np.float32)
+        arg[0, -1] = 1.0
+        return [noul, src, arg]
+
+    monkeypatch.setattr(predictor._session, "run", _mock_sem_30)
+    safe_scores = predictor.evaluate(
+        intent="Post status",
+        private_spans=[],
+        untrusted_spans=[],
+        call=CandidateCall(server="http", tool="post", arguments={"body": "ok"}),
+    )
+    assert safe_scores.p_max < 0.16
+
+    # Raw p_sem=0.95 is >= sem.critical_min (0.912), so aligned p_sem must land in CRITICAL (>= 0.50)!
+    def _mock_sem_95(_outputs: Any, _feed: Any) -> list[np.ndarray]:
+        noul = np.array([[0.0, 0.95, 0.0]], dtype=np.float32)
+        src = np.zeros((1, predictor.manifest.max_pchunks + 1), dtype=np.float32)
+        src[0, -1] = 1.0
+        arg = np.zeros((1, predictor.manifest.max_args + 1), dtype=np.float32)
+        arg[0, -1] = 1.0
+        return [noul, src, arg]
+
+    monkeypatch.setattr(predictor._session, "run", _mock_sem_95)
+    crit_scores = predictor.evaluate(
+        intent="Post status",
+        private_spans=[],
+        untrusted_spans=[],
+        call=CandidateCall(server="http", tool="post", arguments={"body": "leak"}),
+    )
+    assert crit_scores.p_sem >= 0.50
+
+    # Tier-0 hard-secret floor (e.g. sk_live_...) must NEVER be scaled down by per-head alignment
+    monkeypatch.setattr(predictor._session, "run", _mock_sem_30)
+    sec_val = "sk_live_998877665544332211"
+    hard_sec_scores = predictor.evaluate(
+        intent="Post status",
+        private_spans=[
+            TaintSpan(
+                span_id="sp_sec",
+                source_label=".env",
+                text=f"STRIPE_KEY={sec_val}",
+                flags=CapabilityFlag.READS_PRIVATE | CapabilityFlag.HIGH_SECRET,
+            )
+        ],
+        untrusted_spans=[],
+        call=CandidateCall(server="http", tool="post", arguments={"body": sec_val}),
+    )
+    assert hard_sec_scores.p_enc >= 0.95
+
+    # When post_int8_val_diagnostics reports 0.0 benign FPR at manifest thresholds (NanoJev-0.6B),
+    # manifest thresholds (0.16 / 0.50) are already exact 0%-FPR boundaries across all heads.
+    zero_fpr_dir = tmp_path / "zero_fpr_bundle"
+    zero_fpr_dir.mkdir()
+    for name in REQUIRED_BUNDLE_FILES:
+        (zero_fpr_dir / name).write_bytes((synthetic_jev_bundle_dir / name).read_bytes())
+    z_manifest = json.loads((zero_fpr_dir / "manifest.json").read_text("utf-8"))
+    z_manifest["thresholds"] = {"warn_min": 0.16, "critical_min": 0.50}
+    z_cal = {
+        "ece_val": 0.0003,
+        "thresholds": {"warn_min": 0.16, "critical_min": 0.50},
+        "per_head_thresholds": {
+            "enc": {"warn_min": 0.15, "critical_min": 0.55},
+            "sem": {"warn_min": 0.15, "critical_min": 0.55},
+            "hijack": {"warn_min": 0.15, "critical_min": 0.55},
+        },
+        "post_int8_val_diagnostics": {
+            "overall_benign_fpr_at_warn": 0.0,
+            "overall_benign_fpr_at_critical": 0.0,
+        },
+    }
+    z_cal_bytes = json.dumps(z_cal).encode("utf-8")
+    (zero_fpr_dir / "calibration.json").write_bytes(z_cal_bytes)
+    z_manifest["sha256_calibration_json"] = hashlib.sha256(z_cal_bytes).hexdigest()
+    (zero_fpr_dir / "manifest.json").write_text(json.dumps(z_manifest), encoding="utf-8")
+
+    z_pred = OrtJevPredictor(zero_fpr_dir, intra_op_threads=1)
+
+    def _mock_hijack_54(_outputs: Any, _feed: Any) -> list[np.ndarray]:
+        noul = np.array([[0.0, 0.0, 0.54]], dtype=np.float32)
+        src = np.zeros((1, z_pred.manifest.max_pchunks + 1), dtype=np.float32)
+        src[0, -1] = 1.0
+        arg = np.zeros((1, z_pred.manifest.max_args + 1), dtype=np.float32)
+        arg[0, -1] = 1.0
+        return [noul, src, arg]
+
+    monkeypatch.setattr(z_pred._session, "run", _mock_hijack_54)
+    z_scores = z_pred.evaluate(
+        intent="Check balance",
+        private_spans=[],
+        untrusted_spans=[],
+        call=CandidateCall(server="bank", tool="send", arguments={"amount": 100}),
+    )
+    assert z_scores.p_hijack == pytest.approx(0.54, abs=1e-5)
+
+
+
+
 
