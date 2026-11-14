@@ -21,7 +21,7 @@ uv sync --dev
 
 1. **Zero-PyTorch Runtime Contract:** `pyproject.toml` and `packages/diodemcp/pyproject.toml` must **never** depend on `torch`, `transformers`, `scipy`, `triton`, or platform-locked `fcntl`. All neural inference in `packages/diodemcp` runs through `onnxruntime` + `tokenizers`. PyTorch training and quantization live strictly inside `model-lab/`.
 2. **No Binary Model Bloat in Git:** Never commit `.onnx` weights or `bundles/` directories to git. Model bundles (`DiodeModelBundle v1.0`) are distributed via GitHub Releases / Hugging Face Hub and verified via SHA-256 digests in `manifest.json`.
-3. **Hardware-TTY Boundary (`C4`):** Security-sensitive state transitions (`diodemcp allow`, `diodemcp unwrap`) must enforce interactive terminal verification (`tty_guard.py`) so untrusted subprocesses cannot programmatically bypass the firewall.
+3. **Controlling-TTY Guard (`C4`):** Privileged CLI transitions (`diodemcp allow`, `diodemcp unwrap`, `diodemcp shutdown`) must verify TTY streams and prompt via `/dev/tty` (`CONIN$`/`CONOUT$` on Windows) in `cli.py` so non-interactive subprocess pipes are rejected, while keeping documentation honest that same-UID PTY allocation requires OS container/UID isolation.
 
 ## Running the Test Suites
 

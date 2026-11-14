@@ -7,11 +7,12 @@ DiodeMCP is a **local defense-in-depth MCP wire firewall** designed to protect d
 1. **Indirect Prompt Injection & Confused-Deputy Hijacks:** Untrusted external data (GitHub issues, PR comments, fetched web pages, database records) steering the agent into unauthorized tool calls (`http.post`, `exec.run_cmd`, `filesystem.write_file`, destructive SQL).
 2. **Multi-Turn & Encoded Secret Exfiltration:** Sensitive local data (`.env` files, SSH keys, cloud tokens, internal rows) read in earlier turns and exfiltrated verbatim, chunked, or base64/hex/URL-encoded in later turns.
 3. **MCP `tools/list` Poisoning & Mid-Session Rug-Pulls:** Malicious instructions embedded inside tool schema descriptions or silent schema mutations after initial catalog discovery.
-4. **Agent Self-Approval Bypass (`C4`):** A hijacked coding agent attempting to run `diodemcp allow` or `diodemcp unwrap` via a shell tool. DiodeMCP mitigates this by opening `/dev/tty` (`CONIN$` on Windows) directly rather than reading `stdin`, rejecting non-interactive subprocess pipes.
+4. **Non-Interactive Subprocess Pipe Friction (`C4`):** Privileged CLI commands (`diodemcp allow`, `diodemcp unwrap`, `diodemcp shutdown`) require `stdin`/`stdout` TTYs and read interactive confirmation directly from `/dev/tty` (`CONIN$`/`CONOUT$` on Windows), preventing MCP-only tool servers and naive non-PTY subprocess pipes from auto-approving blocked calls.
 
-### Non-Goals / Out of Scope
+### Non-Goals & Same-UID Limitations
 
-- **Root / Kernel Compromise on the Same Host:** If an attacker already has arbitrary local code execution outside the MCP client/agent boundary under your OS user account, they can modify user-owned files directly. Run untrusted code execution tools inside containers or VMs alongside DiodeMCP.
+- **Unsandboxed Same-UID Host Shell Agents:** Terminal checks (`/dev/tty`, `isatty()`) and `0600` files (`~/.diodemcp/admin.secret`) are **not** an OS privilege boundary against a process already executing arbitrary shell/Python code as your own OS user: a same-UID process can allocate a pseudo-terminal (`pty.openpty()`), pass `--yes` inside that PTY, or read `~/.diodemcp/admin.secret` directly. DiodeMCP is an **MCP wire & cooperative IDE hook guard** — if an agent has unrestricted shell execution, run the agent inside a container, VM, or separate OS UID while keeping DiodeMCP outside that sandbox.
+- **Classifier Generalization Limits:** Neural taint scoring reduces false positives substantially on structured MCP flows, but like any ML classifier it can produce false positives on unusual benign payloads or miss novel adaptive encodings/obfuscations outside its training distribution. Treat DiodeMCP as a defense-in-depth layer alongside least-privilege credentials and network egress controls.
 - **Model Bundle Integrity Bypass via Custom Unpinned Local Paths:** Official `base` and `nano` bundles enforce strict SHA-256 verification against `manifest.json` before `onnxruntime` loads any graph.
 
 ## Supported Versions

@@ -103,8 +103,25 @@ def _restart_daemon_if_running(state_dir: Path) -> None:
         time.sleep(0.01)
 
 
+def _open_controlling_tty() -> tuple[Any, Any]:
+    """Open the process controlling terminal (`/dev/tty` on POSIX, `CONIN$`/`CONOUT$` on Windows)."""
+    in_dev = "CONIN$" if os.name == "nt" else "/dev/tty"
+    out_dev = "CONOUT$" if os.name == "nt" else "/dev/tty"
+    tty_in = open(in_dev, "r", encoding="utf-8", errors="replace")
+    try:
+        tty_out = open(out_dev, "w", encoding="utf-8", errors="replace")
+    except OSError:
+        tty_in.close()
+        raise
+    if not (tty_in.isatty() and tty_out.isatty()):
+        tty_in.close()
+        tty_out.close()
+        raise OSError("Controlling terminal streams are not interactive TTYs")
+    return tty_in, tty_out
+
+
 def _ensure_interactive_tty() -> None:
-    """Verify both `sys.stdin` and `sys.stdout` are real interactive TTYs (`C4`)."""
+    """Verify `stdin`/`stdout` are TTYs and a controlling terminal (`/dev/tty` or `CONIN$`) is attached (`C4`)."""
     stdin_ok = bool(
         sys.stdin is not None
         and hasattr(sys.stdin, "isatty")
@@ -115,10 +132,20 @@ def _ensure_interactive_tty() -> None:
         and hasattr(sys.stdout, "isatty")
         and sys.stdout.isatty()
     )
-    if not (stdin_ok and stdout_ok):
+    ctty_ok = False
+    if stdin_ok and stdout_ok:
+        try:
+            tty_in, tty_out = _open_controlling_tty()
+            tty_in.close()
+            tty_out.close()
+            ctty_ok = True
+        except OSError:
+            ctty_ok = False
+
+    if not (stdin_ok and stdout_ok and ctty_ok):
         sys.stderr.write(
-            "Error [C4]: This privileged DiodeMCP command requires an interactive human TTY "
-            "(both stdin and stdout must be a TTY). Non-interactive agent subprocesses are forbidden.\n"
+            "Error [C4]: This privileged DiodeMCP command requires an interactive controlling terminal "
+            "(/dev/tty or CONIN$, with TTY stdin/stdout). Non-interactive subprocesses are rejected.\n"
         )
         sys.stderr.flush()
         raise SystemExit(2)
@@ -130,20 +157,30 @@ def require_interactive_tty(
     action_description: str = "perform privileged action",
     accepted_tokens: Sequence[str] = (),
 ) -> None:
-    """Enforce `C4` interactive human TTY requirement (`sys.stdin.isatty() and sys.stdout.isatty()`)."""
+    """Enforce `C4` controlling-TTY check and prompt directly on `/dev/tty` (`CONIN$`/`CONOUT$` on Windows)."""
     _ensure_interactive_tty()
 
     if not yes:
-        sys.stdout.write(
-            f"Confirm DiodeMCP privileged action ({action_description})? [y/N]: "
-        )
-        sys.stdout.flush()
         try:
-            answer = sys.stdin.readline()
+            tty_in, tty_out = _open_controlling_tty()
+        except OSError as exc:
+            sys.stderr.write("Error [C4]: Unable to open controlling terminal.\n")
+            sys.stderr.flush()
+            raise SystemExit(2) from exc
+        try:
+            tty_out.write(
+                f"Confirm DiodeMCP privileged action ({action_description})? [y/N]: "
+            )
+            tty_out.flush()
+            answer = tty_in.readline()
         except BaseException as exc:
             sys.stderr.write("\nAborted.\n")
             sys.stderr.flush()
             raise SystemExit(2) from exc
+        finally:
+            tty_in.close()
+            tty_out.close()
+
         normalized = answer.strip().lower()
         allowed = {"y", "yes", *(tok.strip().lower() for tok in accepted_tokens if tok and tok.strip())}
         if not normalized or normalized not in allowed:

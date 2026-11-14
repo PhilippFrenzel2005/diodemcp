@@ -36,19 +36,27 @@ def _run_cli_in_pty(
 ) -> tuple[int, str]:
     """Execute `python -m diodemcp.cli <args>` attached to a real pseudo-terminal (`pty.openpty()`)."""
     master_fd, slave_fd = pty.openpty()
+    slave_name = os.ttyname(slave_fd)
     proc_env = os.environ.copy()
     if env:
         proc_env.update(env)
 
+    def _attach_controlling_tty() -> None:
+        os.setsid()
+        ctty_fd = os.open(slave_name, os.O_RDWR)
+        os.dup2(ctty_fd, 0)
+        os.dup2(ctty_fd, 1)
+        os.dup2(ctty_fd, 2)
+        if ctty_fd > 2:
+            os.close(ctty_fd)
+
+    os.close(slave_fd)
     proc = subprocess.Popen(
         [sys.executable, "-m", "diodemcp.cli", *args],
-        stdin=slave_fd,
-        stdout=slave_fd,
-        stderr=slave_fd,
         env=proc_env,
+        preexec_fn=_attach_controlling_tty,
         close_fds=True,
     )
-    os.close(slave_fd)
 
     output_chunks: list[bytes] = []
     sent_input = False

@@ -341,15 +341,15 @@ def render_live_wire_suite_b(sb_by_id: dict[str, dict], dark: bool) -> str:
         f'    <linearGradient id="wbBg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="{bg1}"/><stop offset="100%" stop-color="{bg2}"/></linearGradient>',
         "  </defs>",
         f'  <rect x="1" y="1" width="1078" height="388" rx="16" fill="url(#wbBg)" stroke="{outer_border}" stroke-width="1.5"/>',
-        f'  <text x="32" y="36" fill="{fg}" font-family="{FONT_SANS}" font-size="18" font-weight="800">Suite B Live MCP stdio Wire Benchmark (30 Real Child-Process Sessions)</text>',
-        f'  <text x="32" y="56" fill="{sub}" font-family="{FONT_MONO}" font-size="11.5">20 Live Wire Attacks (5 per category) + 10 Benign Sessions · 0.0% Benign Wire FPR across DiodeMCP tiers</text>',
+        f'  <text x="32" y="36" fill="{fg}" font-family="{FONT_SANS}" font-size="18" font-weight="800">Suite B Live MCP stdio Wire Smoke Suite (30 Child-Process Sessions)</text>',
+        f'  <text x="32" y="56" fill="{sub}" font-family="{FONT_MONO}" font-size="11.5">20 Attack + 10 Benign Sessions · Benign False Blocks: NanoJev 1/10, Base-149M 2/10, Tier-0 0/10, LLM-Guard 3/10</text>',
         # Left Card
         f'  <rect x="28" y="72" width="536" height="294" rx="12" fill="{card_bg}" stroke="{border}"/>',
         f'  <text x="48" y="98" fill="{fg}" font-family="{FONT_SANS}" font-size="14" font-weight="700">Live Wire Attacks Blocked by Attack Surface (/20)</text>',
         # Right Card
         f'  <rect x="584" y="72" width="468" height="294" rx="12" fill="{card_bg}" stroke="{border}"/>',
         f'  <text x="604" y="98" fill="{fg}" font-family="{FONT_SANS}" font-size="14" font-weight="700">Wire p50 Overhead (Log ms)</text>',
-        f'  <text x="1032" y="98" text-anchor="end" fill="{ "#34d399" if dark else "#047857" }" font-family="{FONT_MONO}" font-size="11" font-weight="700">40.6x FASTER vs LLM-GUARD</text>',
+        f'  <text x="1032" y="98" text-anchor="end" fill="{ "#34d399" if dark else "#047857" }" font-family="{FONT_MONO}" font-size="11" font-weight="700">SESSION MEDIAN (p50)</text>',
     ]
 
     # Category legend row on left card
@@ -410,7 +410,7 @@ def render_live_wire_suite_b(sb_by_id: dict[str, dict], dark: bool) -> str:
         ms_txt = f"{float(rec['overhead_p50_ms']):.2f} ms"
         lines.append(f'  <text x="{rx_bar0 + rx_full + 10:.1f}" y="{ry+15}" fill="{tcol}" font-family="{FONT_MONO}" font-size="11.5" font-weight="{fw}">{ms_txt}</text>')
 
-    lines.append(f'  <text x="604" y="354" fill="{muted}" font-family="{FONT_MONO}" font-size="10">95% wire recall at 7.8–11.8 ms p50 (vs. 317.2 ms LLM-Guard)</text>')
+    lines.append(f'  <text x="604" y="354" fill="{muted}" font-family="{FONT_MONO}" font-size="10">p95 wire overhead: NanoJev 246 ms · Base-149M 81 ms · LLM-Guard 344 ms</text>')
     lines.append("</svg>")
     return "\n".join(lines) + "\n"
 

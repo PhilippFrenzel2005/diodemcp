@@ -3,13 +3,13 @@
     <linearGradient id="wbBg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#0b0f17"/><stop offset="100%" stop-color="#0f172a"/></linearGradient>
   </defs>
   <rect x="1" y="1" width="1078" height="388" rx="16" fill="url(#wbBg)" stroke="#1e293b" stroke-width="1.5"/>
-  <text x="32" y="36" fill="#f8fafc" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="18" font-weight="800">Suite B Live MCP stdio Wire Benchmark (30 Real Child-Process Sessions)</text>
-  <text x="32" y="56" fill="#94a3b8" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5">20 Live Wire Attacks (5 per category) + 10 Benign Sessions · 0.0% Benign Wire FPR across DiodeMCP tiers</text>
+  <text x="32" y="36" fill="#f8fafc" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="18" font-weight="800">Suite B Live MCP stdio Wire Smoke Suite (30 Child-Process Sessions)</text>
+  <text x="32" y="56" fill="#94a3b8" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5">20 Attack + 10 Benign Sessions · Benign False Blocks: NanoJev 1/10, Base-149M 2/10, Tier-0 0/10, LLM-Guard 3/10</text>
   <rect x="28" y="72" width="536" height="294" rx="12" fill="#111827" stroke="#334155"/>
   <text x="48" y="98" fill="#f8fafc" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="14" font-weight="700">Live Wire Attacks Blocked by Attack Surface (/20)</text>
   <rect x="584" y="72" width="468" height="294" rx="12" fill="#111827" stroke="#334155"/>
   <text x="604" y="98" fill="#f8fafc" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="14" font-weight="700">Wire p50 Overhead (Log ms)</text>
-  <text x="1032" y="98" text-anchor="end" fill="#34d399" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" font-weight="700">40.6x FASTER vs LLM-GUARD</text>
+  <text x="1032" y="98" text-anchor="end" fill="#34d399" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" font-weight="700">SESSION MEDIAN (p50)</text>
   <rect x="48" y="110" width="10" height="10" rx="2" fill="#06b6d4"/>
   <text x="62" y="119" fill="#94a3b8" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10">tools/list Poison</text>
   <rect x="172" y="110" width="10" height="10" rx="2" fill="#10b981"/>
@@ -81,5 +81,5 @@
   <rect x="760.0" y="320" width="200.0" height="20" rx="5" fill="#1e293b"/>
   <rect x="760.0" y="320" width="42.4" height="20" rx="5" fill="#64748b"/>
   <text x="970.0" y="335" fill="#94a3b8" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11.5" font-weight="500">0.35 ms</text>
-  <text x="604" y="354" fill="#64748b" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10">95% wire recall at 7.8–11.8 ms p50 (vs. 317.2 ms LLM-Guard)</text>
+  <text x="604" y="354" fill="#64748b" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10">p95 wire overhead: NanoJev 246 ms · Base-149M 81 ms · LLM-Guard 344 ms</text>
 </svg>
