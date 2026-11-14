@@ -51,18 +51,17 @@ uvx --from git+https://github.com/PhilippFrenzel2005/diodemcp diodemcp init
 ```
 
 <details>
-<summary><b>Alternative: Install via <code>npx</code> or while repository visibility is private</b></summary>
+<summary><b>Alternative: Flagship <code>NanoJev-0.6B</code> install or <code>npx</code> launcher</b></summary>
+
+**Install with the flagship `NanoJev-0.6B` bundle (`0.999` AUROC, `0.4%` FPR):**
+```bash
+uv tool install git+https://github.com/PhilippFrenzel2005/diodemcp
+diodemcp init --model nano
+```
 
 **Node / `npx` wrapper** (bootstraps an isolated `~/.diodemcp/venv` via `uv` or `python3`):
 ```bash
 npx --yes @diodemcp/cli init
-```
-
-**Private-repo review mode** (when cloning/installing before public release with `gh` CLI authenticated):
-```bash
-gh auth setup-git
-GITHUB_TOKEN="$(gh auth token)" uv tool install git+https://github.com/PhilippFrenzel2005/diodemcp
-GITHUB_TOKEN="$(gh auth token)" diodemcp init
 ```
 </details>
 
