@@ -847,14 +847,23 @@ def test_config_patcher_absolute_cmd_remote_http_sse_projects_and_cli_allow_summ
         short_prefix = inc_id[:8]
 
         master_fd, slave_fd = pty.openpty()
+        slave_name = os.ttyname(slave_fd)
+
+        def _attach_controlling_tty() -> None:
+            os.setsid()
+            ctty_fd = os.open(slave_name, os.O_RDWR)
+            os.dup2(ctty_fd, 0)
+            os.dup2(ctty_fd, 1)
+            os.dup2(ctty_fd, 2)
+            if ctty_fd > 2:
+                os.close(ctty_fd)
+
+        os.close(slave_fd)
         proc = subprocess.Popen(
             [sys.executable, "-m", "diodemcp.cli", "allow", inc_id, "--state-dir", str(state_dir)],
-            stdin=slave_fd,
-            stdout=slave_fd,
-            stderr=slave_fd,
+            preexec_fn=_attach_controlling_tty,
             close_fds=True,
         )
-        os.close(slave_fd)
         chunks: list[bytes] = []
         sent = False
         deadline = time.monotonic() + 10.0
